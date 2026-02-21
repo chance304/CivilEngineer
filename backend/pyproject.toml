@@ -1,0 +1,107 @@
+[project]
+name = "civilengineer"
+version = "0.1.0"
+description = "AI Architectural Copilot — generates professional DXF floor plans and elevation drawings"
+requires-python = ">=3.12"
+dependencies = [
+    # CAD output
+    "ezdxf>=1.3.4",
+
+    # Geometry
+    "shapely>=2.0.6",
+
+    # Data validation / schemas
+    "pydantic>=2.10.0",
+
+    # PDF parsing (Phase 4 — building code extraction)
+    "pdfplumber>=0.11.4",
+    "pymupdf>=1.25.0",
+
+    # LLM routing (Phase 2+)
+    "litellm>=1.60.0",
+
+    # Agent orchestration (Phase 7+)
+    "langgraph>=0.3.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+
+    # Vector store (Phase 4+)
+    "chromadb>=0.6.0",
+    "sentence-transformers>=3.4.0",
+
+    # Room packing (Phase 5+)
+    "rectpack>=0.2.2",
+
+    # Constraint solver (Phase 5+)
+    "ortools>=9.11.4210",
+
+    # Web framework (Phase 2+)
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.7",
+
+    # Config (Phase 2+)
+    "pydantic-settings>=2.0.0",
+
+    # PDF export (Phase 8+)
+    "reportlab>=4.0.0",
+
+    # MCP server (Phase 7+)
+    "fastmcp>=2.0.0",
+
+    # Database (Phase 2+)
+    "sqlmodel>=0.0.22",
+    "alembic>=1.14.0",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.10",
+
+    # Task queue (Phase 7+)
+    "celery[redis]>=5.4.0",
+
+    # Auth (Phase 2+)
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
+
+    # Storage (Phase 3+)
+    "boto3>=1.36.0",
+
+    # CLI
+    "typer>=0.15.0",
+    "rich>=13.9.0",
+]
+
+[project.scripts]
+civilengineer = "civilengineer.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/civilengineer"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "mypy>=1.14.0",
+    "ruff>=0.9.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

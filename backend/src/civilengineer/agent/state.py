@@ -64,6 +64,8 @@ class AgentState(TypedDict, total=False):
     output_dir: str | None               # path to session output directory
     dxf_paths: list[str] | None          # per-floor + combined DXF file paths
     pdf_paths: list[str] | None          # PDF design package paths
+    ifc_path: str | None                 # IFC 2x3 BIM export path (ifcopenshell)
+    dwg_paths: list[str] | None          # DWG files converted from DXF via ODA
     cost_estimate: dict | None           # serialised CostEstimate
     report_path: str | None              # JSON compliance report path
 
@@ -109,6 +111,8 @@ def make_initial_state(project_id: str, session_id: str) -> AgentState:
         output_dir=None,
         dxf_paths=None,
         pdf_paths=None,
+        ifc_path=None,
+        dwg_paths=None,
         cost_estimate=None,
         report_path=None,
         revision_count=0,

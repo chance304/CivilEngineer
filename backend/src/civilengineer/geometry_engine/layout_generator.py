@@ -142,6 +142,7 @@ def generate_floor_plans(
                 is_external_wall_south=ext_south,
                 is_external_wall_east=ext_east,
                 is_external_wall_west=ext_west,
+                staircase_spec=pr.staircase_spec,
             ))
 
         floor_plans.append(FloorPlan(

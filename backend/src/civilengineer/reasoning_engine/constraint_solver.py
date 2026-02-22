@@ -39,16 +39,18 @@ Usage
 from __future__ import annotations
 
 import logging
+import math
 import time
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from civilengineer.schemas.design import (
     DesignRequirements,
     Rect2D,
     RoomRequirement,
     RoomType,
+    StaircaseSpec,
 )
 from civilengineer.schemas.rules import DesignRule
 
@@ -116,6 +118,103 @@ _UPPER_FLOOR_TYPES = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Staircase geometry helpers
+# ---------------------------------------------------------------------------
+
+
+def _compute_staircase_dims(
+    floor_height_m: float = 3.0,
+) -> tuple[float, float, StaircaseSpec]:
+    """
+    Compute minimum staircase enclosure dimensions for a U-turn stair.
+
+    NBC 105 / IS 875 requirements:
+      - max riser height: 175mm
+      - min tread depth:  280mm
+      - min clear width:  1.0m
+      - min landing:      1.0m (one at mid-landing + one at top)
+
+    Returns (enclosure_width, enclosure_depth, StaircaseSpec).
+    """
+    riser_mm   = 175.0
+    tread_mm   = 280.0
+    clear_w    = 1.0    # metres — clear walking width per flight
+    landing    = 1.0    # metres — intermediate landing depth
+
+    n_risers   = math.ceil(floor_height_m * 1000 / riser_mm)   # e.g. 18 for 3.0m
+    n_per_half = math.ceil(n_risers / 2)                         # e.g. 9
+    flight_run = n_per_half * tread_mm / 1000.0                  # e.g. 2.52m
+
+    # U-turn: two parallel flights + wall between + landing
+    enc_width = round(2 * clear_w + 0.23, 2)  # ≈ 2.23m (wall 230mm between flights)
+    enc_depth = round(flight_run + landing, 2)  # ≈ 3.52m
+
+    spec = StaircaseSpec(
+        num_risers=n_risers,
+        riser_height_mm=riser_mm,
+        tread_depth_mm=tread_mm,
+        clear_width_m=clear_w,
+        landing_depth_m=landing,
+        stair_type="u_turn",
+        headroom_m=2.0,
+    )
+    return (enc_width, enc_depth, spec)
+
+
+# ---------------------------------------------------------------------------
+# Column grid helpers (NBC 105 §5.3 — vertical column continuity)
+# ---------------------------------------------------------------------------
+
+
+def _extract_column_grid(
+    placed: list[PlacedRoom],
+) -> tuple[frozenset[int], frozenset[int]]:
+    """
+    Extract unique X and Y boundary coordinates (in scaled integer units)
+    from all placed rooms on a floor.
+
+    These coordinates define the structural column grid — every room boundary
+    is a potential column line.
+    """
+    xs: set[int] = set()
+    ys: set[int] = set()
+    for pr in placed:
+        x_i = round(pr.x * _SCALE)
+        y_i = round(pr.y * _SCALE)
+        w_i = round(pr.width * _SCALE)
+        d_i = round(pr.depth * _SCALE)
+        xs.update([x_i, x_i + w_i])
+        ys.update([y_i, y_i + d_i])
+    return frozenset(xs), frozenset(ys)
+
+
+def _find_column_positions(
+    xs: frozenset[int],
+    ys: frozenset[int],
+    zone: Rect2D,
+    floors_solved: list[int],
+) -> list[dict]:
+    """
+    Compute structural column positions at every xs×ys intersection.
+
+    Returns list of dicts compatible with ColumnPosition schema (plus 'floor' key).
+    Columns appear on every solved floor (same grid, vertical continuity).
+    """
+    result: list[dict] = []
+    for floor_num in floors_solved:
+        for xi in sorted(xs):
+            for yi in sorted(ys):
+                result.append({
+                    "x":     round(xi / _SCALE + zone.x, 3),
+                    "y":     round(yi / _SCALE + zone.y, 3),
+                    "width": 0.30,
+                    "depth": 0.30,
+                    "floor": floor_num,
+                })
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Result models
 # ---------------------------------------------------------------------------
 
@@ -133,6 +232,7 @@ class SizedRoom(BaseModel):
     floor: int
     width: float   # metres
     depth: float   # metres
+    staircase_spec: StaircaseSpec | None = None  # populated for STAIRCASE rooms
 
     @property
     def area(self) -> float:
@@ -147,6 +247,7 @@ class PlacedRoom(BaseModel):
     y: float
     width: float   # metres
     depth: float   # metres
+    staircase_spec: StaircaseSpec | None = None  # propagated from SizedRoom
 
     @property
     def area(self) -> float:
@@ -161,6 +262,7 @@ class SolveResult(BaseModel):
     solver_time_s: float
     buildable_zone: Rect2D
     floors_solved: list[int]   # floor numbers that had a feasible solution
+    columns: list[dict] = Field(default_factory=list)  # ColumnPosition dicts (with floor key)
 
 
 # ---------------------------------------------------------------------------
@@ -204,16 +306,29 @@ def solve_layout(
     # Keep staircase in sync across all floors (same x,y on every floor)
     staircase_position: tuple[float, float] | None = None
 
+    # Column grid extracted from floor 1 (NBC 105 §5.3 — vertical continuity)
+    column_grid: tuple[frozenset[int], frozenset[int]] | None = None
+    all_columns: list[dict] = []
+
     for floor_num in sorted(floors.keys()):
         floor_rooms = floors[floor_num]
         placed, unplaced, staircase_position = _solve_floor(
             floor_num, floor_rooms, buildable_zone,
             staircase_position, timeout_s, warnings,
+            column_grid=column_grid,
         )
         all_placed.extend(placed)
         all_unplaced.extend(unplaced)
         if placed:
             floors_solved.append(floor_num)
+            # Extract column grid from floor 1 for upper floor alignment
+            if floor_num == 1:
+                column_grid = _extract_column_grid(placed)
+
+    # Compute structural column positions once we know all solved floors
+    if column_grid is not None:
+        xs, ys = column_grid
+        all_columns = _find_column_positions(xs, ys, buildable_zone, floors_solved)
 
     elapsed = time.monotonic() - t0
 
@@ -232,6 +347,7 @@ def solve_layout(
         solver_time_s=elapsed,
         buildable_zone=buildable_zone,
         floors_solved=floors_solved,
+        columns=all_columns,
     )
 
 
@@ -426,7 +542,25 @@ def _size_rooms(
         target_w = round(target_w, 1)
         target_d = round(target_d, 1)
 
-        sized.append(SizedRoom(room_req=req, floor=floor, width=target_w, depth=target_d))
+        # For staircase rooms: override with geometrically correct dimensions
+        staircase_spec: StaircaseSpec | None = None
+        if rtype == RoomType.STAIRCASE:
+            stair_w, stair_d, staircase_spec = _compute_staircase_dims(floor_height_m=3.0)
+            target_w = max(stair_w, target_w)  # take the larger of computed vs rule-based
+            target_d = max(stair_d, target_d)
+            # Re-clamp to buildable zone
+            target_w = min(target_w, buildable_zone.width * 0.90)
+            target_d = min(target_d, buildable_zone.depth * 0.90)
+            target_w = round(target_w, 1)
+            target_d = round(target_d, 1)
+
+        sized.append(SizedRoom(
+            room_req=req,
+            floor=floor,
+            width=target_w,
+            depth=target_d,
+            staircase_spec=staircase_spec,
+        ))
 
     return sized
 
@@ -443,12 +577,15 @@ def _solve_floor(
     staircase_position: tuple[float, float] | None,
     timeout_s: float,
     warnings: list[str],
+    column_grid: tuple[frozenset[int], frozenset[int]] | None = None,
 ) -> tuple[list[PlacedRoom], list[RoomRequirement], tuple[float, float] | None]:
     """
     Place all rooms on one floor using CP-SAT NoOverlap2D.
 
     Returns (placed_rooms, unplaced_rooms, staircase_xy).
     staircase_xy is forwarded so all floors share the same staircase position.
+    column_grid (xs, ys) constrains upper-floor rooms to align with floor 1's
+    structural grid (NBC 105 §5.3 vertical column continuity).
     """
     from ortools.sat.python import cp_model  # noqa: PLC0415 — lazy import
 
@@ -494,6 +631,47 @@ def _solve_floor(
             sy_i = max(0, min(sy_i, zone_d_i - d_i))
             x = model.NewConstant(sx_i)
             y = model.NewConstant(sy_i)
+
+        elif (
+            column_grid is not None
+            and sr.room_req.room_type != RoomType.STAIRCASE
+        ):
+            # Upper floor: align room left/bottom edges to column grid (NBC 105 §5.3)
+            xs_domain, ys_domain = column_grid
+
+            valid_xs = sorted(v for v in xs_domain if 0 <= v <= zone_w_i - w_i)
+            valid_ys = sorted(v for v in ys_domain if 0 <= v <= zone_d_i - d_i)
+
+            if valid_xs:
+                x = model.NewIntVarFromDomain(
+                    cp_model.Domain.FromValues(valid_xs), f"x_{floor_num}_{i}"
+                )
+                # Right edge must also align to a column line
+                valid_xrs = sorted(v for v in xs_domain if w_i <= v <= zone_w_i)
+                if valid_xrs:
+                    x_right = model.NewIntVar(w_i, zone_w_i, f"xr_{floor_num}_{i}")
+                    model.Add(x_right == x + w_i)
+                    model.AddAllowedAssignments(
+                        [x_right], [(v,) for v in valid_xrs]
+                    )
+            else:
+                x = model.NewIntVar(0, zone_w_i - w_i, f"x_{floor_num}_{i}")
+
+            if valid_ys:
+                y = model.NewIntVarFromDomain(
+                    cp_model.Domain.FromValues(valid_ys), f"y_{floor_num}_{i}"
+                )
+                # Top edge must also align to a column line
+                valid_yts = sorted(v for v in ys_domain if d_i <= v <= zone_d_i)
+                if valid_yts:
+                    y_top = model.NewIntVar(d_i, zone_d_i, f"yt_{floor_num}_{i}")
+                    model.Add(y_top == y + d_i)
+                    model.AddAllowedAssignments(
+                        [y_top], [(v,) for v in valid_yts]
+                    )
+            else:
+                y = model.NewIntVar(0, zone_d_i - d_i, f"y_{floor_num}_{i}")
+
         else:
             x = model.NewIntVar(0, zone_w_i - w_i, f"x_{floor_num}_{i}")
             y = model.NewIntVar(0, zone_d_i - d_i, f"y_{floor_num}_{i}")
@@ -541,6 +719,17 @@ def _solve_floor(
 
     cp_sat_ok = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
+    # If column-grid constraints caused INFEASIBLE, retry without them
+    if not cp_sat_ok and column_grid is not None:
+        warnings.append(
+            f"Floor {floor_num}: column-alignment constraints caused infeasibility; "
+            "retrying without column grid alignment."
+        )
+        return _solve_floor(
+            floor_num, sized_rooms, zone, staircase_position,
+            timeout_s, warnings, column_grid=None,
+        )
+
     for i, sr in enumerate(sized_rooms):
         if x_vars[i] is None:
             unplaced.append(sr.room_req)
@@ -560,6 +749,7 @@ def _solve_floor(
             y=y_val,
             width=sr.width,
             depth=sr.depth,
+            staircase_spec=sr.staircase_spec,
         ))
 
         if sr.room_req.room_type == RoomType.STAIRCASE and staircase_position is None:

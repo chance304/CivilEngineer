@@ -293,10 +293,10 @@ async def upload_building_code(
 
 @router.get("/building-codes", response_model=list[BuildingCodeDocumentResponse])
 async def list_building_codes(
-    jurisdiction: Annotated[str | None, Query()] = None,
-    doc_status: Annotated[str | None, Query(alias="status")] = None,
     current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
     session: Annotated[AsyncSession, Depends(get_session)],
+    jurisdiction: Annotated[str | None, Query()] = None,
+    doc_status: Annotated[str | None, Query(alias="status")] = None,
 ) -> list[BuildingCodeDocumentResponse]:
     """
     List building code documents uploaded by this firm.
@@ -319,9 +319,9 @@ async def list_building_codes(
 )
 async def list_extracted_rules(
     doc_id: str,
-    approved: Annotated[bool | None, Query(description="Filter: true=approved, false=rejected, omit=all")] = None,
     current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
     session: Annotated[AsyncSession, Depends(get_session)],
+    approved: Annotated[bool | None, Query(description="Filter: true=approved, false=rejected, omit=all")] = None,
 ) -> list[ExtractedRuleResponse]:
     """
     Return extracted rules for a building code document.

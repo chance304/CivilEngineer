@@ -14,9 +14,14 @@ from datetime import UTC, datetime
 
 from civilengineer.agent.state import AgentState
 from civilengineer.geometry_engine.layout_generator import generate_floor_plans
-from civilengineer.geometry_engine.wall_builder import build_walls
+from civilengineer.geometry_engine.wall_builder import build_walls, build_walls_cross_floor
 from civilengineer.reasoning_engine.constraint_solver import SolveResult
-from civilengineer.schemas.design import BuildingDesign, DesignRequirements, Rect2D
+from civilengineer.schemas.design import (
+    BuildingDesign,
+    ColumnPosition,
+    DesignRequirements,
+    Rect2D,
+)
 from civilengineer.schemas.project import PlotInfo
 
 logger = logging.getLogger(__name__)
@@ -75,8 +80,22 @@ def geometry_node(state: AgentState) -> dict:
             solve_result, req, plot_info, setback_tuple
         )
 
-        for fp in floor_plans:
+        for i, fp in enumerate(floor_plans):
             build_walls(fp)
+            # Cross-floor load-bearing detection: check if walls support upper floor
+            upper_fp = floor_plans[i + 1] if i + 1 < len(floor_plans) else None
+            build_walls_cross_floor(fp, upper_fp)
+
+        # Wire structural column positions from SolveResult → FloorPlan.columns
+        for fp in floor_plans:
+            floor_columns = [
+                col for col in solve_result.columns
+                if col.get("floor") == fp.floor
+            ]
+            fp.columns = [
+                ColumnPosition(x=c["x"], y=c["y"], width=c.get("width", 0.30), depth=c.get("depth", 0.30))
+                for c in floor_columns
+            ]
 
         floor_plan_dicts = [fp.model_dump() for fp in floor_plans]
 

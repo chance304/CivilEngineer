@@ -26,9 +26,10 @@ Skipped (data not in FloorPlan schema):
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 
-from civilengineer.schemas.design import BuildingDesign, RoomLayout, RoomType
+from civilengineer.schemas.design import BuildingDesign, FloorPlan, RoomLayout, RoomType
 from civilengineer.schemas.rules import (
     ComplianceReport,
     DesignRule,
@@ -51,6 +52,9 @@ _CHECKABLE_RULE_TYPES: frozenset[str] = frozenset({
     "min_floor_height",
     "min_window_area_ratio",
     "min_stair_width",
+    "min_stair_headroom",    # now checkable via StaircaseSpec
+    "min_stair_landing",     # now checkable via StaircaseSpec
+    "max_wall_span",         # structural span limit (NBC 105)
     "vastu_location",
 })
 
@@ -255,6 +259,12 @@ def _check_rule(
         return _check_window_area(rule, all_rooms)
     if rt == "min_stair_width":
         return _check_stair_width(rule, all_rooms)
+    if rt == "min_stair_headroom":
+        return _check_stair_headroom(rule, all_rooms)
+    if rt == "min_stair_landing":
+        return _check_stair_landing(rule, all_rooms)
+    if rt == "max_wall_span":
+        return _check_max_wall_span(rule, building)
     if rt == "vastu_location":
         return _check_vastu_location(rule, all_rooms, building)
 
@@ -499,6 +509,111 @@ def _check_stair_width(rule: DesignRule, rooms: list[RoomLayout]) -> list[RuleVi
                 unit=rule.unit,
                 source_section=rule.source_section,
             ))
+    return out
+
+
+def _check_stair_headroom(rule: DesignRule, rooms: list[RoomLayout]) -> list[RuleViolation]:
+    """
+    Verify staircase enclosure is deep enough to guarantee minimum headroom.
+
+    For a U-turn stair: enclosure_depth >= flight_run + landing_depth.
+    The flight_run is derived from StaircaseSpec (num_risers/2 × tread_depth).
+    """
+    out = []
+    for room in rooms:
+        if room.room_type != RoomType.STAIRCASE:
+            continue
+        spec = room.staircase_spec
+        if spec is None:
+            continue
+        n_per_half = math.ceil(spec.num_risers / 2)
+        flight_run = n_per_half * spec.tread_depth_mm / 1000.0
+        min_depth = flight_run + spec.landing_depth_m
+        actual_depth = max(room.bounds.width, room.bounds.depth)
+        if actual_depth < min_depth - 0.05:
+            out.append(RuleViolation(
+                rule_id=rule.rule_id,
+                rule_name=rule.name,
+                severity=rule.severity,
+                category=rule.category,
+                room_id=room.room_id,
+                room_type=room.room_type.value,
+                message=(
+                    f"Staircase enclosure depth {actual_depth:.2f} m is insufficient; "
+                    f"min {min_depth:.2f} m required for {spec.num_risers} risers "
+                    f"({spec.riser_height_mm:.0f} mm) + {spec.landing_depth_m:.1f} m landing."
+                ),
+                actual_value=round(actual_depth, 2),
+                required_value=round(min_depth, 2),
+                unit="m",
+                source_section=rule.source_section,
+            ))
+    return out
+
+
+def _check_stair_landing(rule: DesignRule, rooms: list[RoomLayout]) -> list[RuleViolation]:
+    """
+    Verify staircase landing depth meets minimum (default 0.9m per NBC 105).
+    """
+    min_landing = rule.numeric_value if rule.numeric_value is not None else 0.9
+    out = []
+    for room in rooms:
+        if room.room_type != RoomType.STAIRCASE:
+            continue
+        spec = room.staircase_spec
+        if spec is None:
+            continue
+        if spec.landing_depth_m < min_landing - 0.02:
+            out.append(RuleViolation(
+                rule_id=rule.rule_id,
+                rule_name=rule.name,
+                severity=rule.severity,
+                category=rule.category,
+                room_id=room.room_id,
+                room_type=room.room_type.value,
+                message=(
+                    f"Staircase landing depth {spec.landing_depth_m:.2f} m is below "
+                    f"minimum {min_landing:.2f} m (NBC 105 §7)."
+                ),
+                actual_value=round(spec.landing_depth_m, 2),
+                required_value=min_landing,
+                unit="m",
+                source_section=rule.source_section,
+            ))
+    return out
+
+
+def _check_max_wall_span(rule: DesignRule, building: BuildingDesign) -> list[RuleViolation]:
+    """
+    Flag load-bearing wall segments that exceed maximum beam span (NBC 105: 5.0m).
+    """
+    max_span = rule.numeric_value if rule.numeric_value is not None else 5.0
+    out = []
+    for fp in building.floor_plans:
+        for seg in fp.wall_segments:
+            if not seg.is_load_bearing:
+                continue
+            span = seg.structural_span_m
+            if span is None:
+                # Compute span from geometry
+                dx = seg.end.x - seg.start.x
+                dy = seg.end.y - seg.start.y
+                span = math.hypot(dx, dy)
+            if span > max_span + 0.05:
+                out.append(RuleViolation(
+                    rule_id=rule.rule_id,
+                    rule_name=rule.name,
+                    severity=rule.severity,
+                    category=rule.category,
+                    message=(
+                        f"Floor {fp.floor}: load-bearing wall span {span:.2f} m exceeds "
+                        f"maximum {max_span:.1f} m (NBC 105 structural limit)."
+                    ),
+                    actual_value=round(span, 2),
+                    required_value=max_span,
+                    unit="m",
+                    source_section=rule.source_section,
+                ))
     return out
 
 

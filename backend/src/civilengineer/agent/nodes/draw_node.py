@@ -23,8 +23,10 @@ from langchain_core.messages import AIMessage
 
 from civilengineer.agent.state import AgentState
 from civilengineer.cad_layer.ezdxf_driver import EzdxfDriver
+from civilengineer.cad_layer.oda_converter import convert_to_dwg
 from civilengineer.output_layer.cost_estimator import CostEstimator
 from civilengineer.output_layer.dxf_exporter import DXFExporter
+from civilengineer.output_layer.ifc_exporter import IFCExporter
 from civilengineer.output_layer.pdf_exporter import PDFExporter
 from civilengineer.schemas.design import BuildingDesign, FloorPlan
 
@@ -132,12 +134,38 @@ def draw_node(state: AgentState) -> dict:
         logger.info("draw_node: wrote PDF %s", pdf_path)
 
         # ------------------------------------------------------------------ #
-        # 5. Summary message
+        # 5. IFC export (best-effort; requires ifcopenshell)
         # ------------------------------------------------------------------ #
+        ifc_result = IFCExporter().export(building, out_dir)
+        ifc_path: str | None = str(ifc_result) if ifc_result else None
+        if ifc_path:
+            logger.info("draw_node: wrote IFC %s", ifc_path)
+
+        # ------------------------------------------------------------------ #
+        # 6. DWG conversion (best-effort; requires ODA binary)
+        # ------------------------------------------------------------------ #
+        dwg_paths: list[str] = []
+        floor_dxf_paths = [p for p in dxf_paths if Path(p).name.startswith("floor_")]
+        for dxf_path_str in floor_dxf_paths:
+            dwg = convert_to_dwg(Path(dxf_path_str))
+            if dwg:
+                dwg_paths.append(str(dwg))
+                logger.info("draw_node: DWG converted %s", dwg)
+
+        # ------------------------------------------------------------------ #
+        # 7. Summary message
+        # ------------------------------------------------------------------ #
+        extra_formats = []
+        if ifc_path:
+            extra_formats.append(f"  • IFC: {ifc_path}")
+        for dwg in dwg_paths:
+            extra_formats.append(f"  • DWG: {dwg}")
+
         summary = (
             f"Generated {len([p for p in dxf_paths if p.endswith('.dxf')])} DXF file(s) "
             f"+ 1 PDF:\n"
             + "\n".join(f"  • {p}" for p in dxf_paths + pdf_paths)
+            + ("\n" + "\n".join(extra_formats) if extra_formats else "")
             + f"\n\nCost estimate ({grade}): {cost_estimate.formatted_total()}"
         )
 
@@ -149,6 +177,8 @@ def draw_node(state: AgentState) -> dict:
             "data": {
                 "dxf_paths": dxf_paths,
                 "pdf_paths": pdf_paths,
+                "ifc_path": ifc_path,
+                "dwg_paths": dwg_paths,
                 "num_floors": building.num_floors,
                 "roof_type": getattr(building, "roof_type", ""),
                 "facade_material": grade,
@@ -158,6 +188,8 @@ def draw_node(state: AgentState) -> dict:
         return {
             "dxf_paths":    dxf_paths,
             "pdf_paths":    pdf_paths,
+            "ifc_path":     ifc_path,
+            "dwg_paths":    dwg_paths or None,
             "cost_estimate": cost_dict,
             "output_dir":   str(out_dir),
             "messages":     [AIMessage(content=summary)],

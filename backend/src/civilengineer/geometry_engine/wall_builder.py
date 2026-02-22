@@ -21,7 +21,9 @@ Usage
 
 from __future__ import annotations
 
-from civilengineer.schemas.design import FloorPlan, Point2D, Rect2D, WallSegment
+import math
+
+from civilengineer.schemas.design import FloorPlan, Point2D, Rect2D, RoomLayout, WallSegment
 
 # Snapping tolerance (metres) — segments within this distance are considered identical
 _TOL = 0.02
@@ -86,6 +88,56 @@ def build_walls(floor_plan: FloorPlan) -> list[WallSegment]:
 
     floor_plan.wall_segments = result
     return result
+
+
+# ---------------------------------------------------------------------------
+# Cross-floor load-bearing detection (NBC 105 §5.3)
+# ---------------------------------------------------------------------------
+
+
+def build_walls_cross_floor(
+    floor_plan: FloorPlan,
+    upper_floor_plan: FloorPlan | None,
+) -> None:
+    """
+    Enhance wall load-bearing classification using cross-floor context.
+
+    A wall segment on floor N is load-bearing if any room on floor N+1
+    has its footprint overlapping the wall's midpoint — i.e., the wall
+    carries the floor slab above.
+
+    Sets is_load_bearing=True and structural_span_m (wall length in metres)
+    for affected segments. Modifies floor_plan.wall_segments in-place.
+    """
+    if upper_floor_plan is None:
+        return
+
+    for seg in floor_plan.wall_segments:
+        if seg.is_load_bearing:
+            continue  # already classified; skip
+        for upper_room in upper_floor_plan.rooms:
+            if _wall_supports_room(seg, upper_room):
+                seg.is_load_bearing = True
+                dx = seg.end.x - seg.start.x
+                dy = seg.end.y - seg.start.y
+                seg.structural_span_m = round(math.hypot(dx, dy), 3)
+                break
+
+
+def _wall_supports_room(seg: WallSegment, room: RoomLayout) -> bool:
+    """
+    Return True if this wall segment's midpoint lies within a room's footprint.
+
+    Used to detect walls that carry the floor above them.
+    """
+    b = room.bounds
+    mid_x = (seg.start.x + seg.end.x) / 2
+    mid_y = (seg.start.y + seg.end.y) / 2
+    tol = 0.1  # metres — tolerance for near-boundary walls
+    return (
+        b.x - tol <= mid_x <= b.x + b.width + tol
+        and b.y - tol <= mid_y <= b.y + b.depth + tol
+    )
 
 
 # ---------------------------------------------------------------------------

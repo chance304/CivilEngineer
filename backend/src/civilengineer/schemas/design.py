@@ -95,6 +95,27 @@ class Window(BaseModel):
     sill_height: float = 0.9    # metres from floor
 
 
+class ColumnPosition(BaseModel):
+    """Structural RCC column at a grid intersection (NBC 105 §5.3)."""
+
+    x: float          # metres from buildable zone origin
+    y: float          # metres from buildable zone origin
+    width: float = 0.30   # 300mm square column (RCC residential)
+    depth: float = 0.30
+
+
+class StaircaseSpec(BaseModel):
+    """Detailed staircase geometry derived from floor-to-floor height."""
+
+    num_risers: int              # total risers for the full flight (floor-to-floor)
+    riser_height_mm: float       # e.g. 175mm (NBC 105: max 175mm)
+    tread_depth_mm: float        # e.g. 280mm (NBC 105: min 280mm)
+    clear_width_m: float         # clear walking width e.g. 1.0m
+    landing_depth_m: float       # min 0.9m (NBC 105 §7)
+    stair_type: str = "u_turn"   # "straight" | "u_turn"
+    headroom_m: float = 2.0      # minimum 2.0m above any stair nosing
+
+
 class WallSegment(BaseModel):
     """An individual wall segment (not a room outline wall)."""
 
@@ -103,6 +124,7 @@ class WallSegment(BaseModel):
     thickness: float = 0.23   # metres (230mm — standard 9" brick)
     is_load_bearing: bool = True
     is_external: bool = False
+    structural_span_m: float | None = None  # span this wall carries (cross-floor)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +144,7 @@ class RoomLayout(BaseModel):
     is_external_wall_south: bool = False
     is_external_wall_east: bool = False
     is_external_wall_west: bool = False
+    staircase_spec: StaircaseSpec | None = None  # populated for STAIRCASE rooms
 
     @property
     def area(self) -> float:
@@ -141,6 +164,7 @@ class FloorPlan(BaseModel):
     buildable_zone: Rect2D           # Available zone after setbacks
     rooms: list[RoomLayout] = Field(default_factory=list)
     wall_segments: list[WallSegment] = Field(default_factory=list)
+    columns: list[ColumnPosition] = Field(default_factory=list)  # structural columns
 
 
 # ---------------------------------------------------------------------------

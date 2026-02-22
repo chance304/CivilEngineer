@@ -14,6 +14,8 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+from datetime import date
 from pathlib import Path
 
 import ezdxf
@@ -23,6 +25,7 @@ from ezdxf.layouts import Modelspace
 from civilengineer.cad_layer.layer_manager import LayerManager
 from civilengineer.schemas.design import (
     BuildingDesign,
+    ColumnPosition,
     Door,
     DoorSwing,
     FloorPlan,
@@ -31,6 +34,8 @@ from civilengineer.schemas.design import (
     WallFace,
     Window,
 )
+
+logger = logging.getLogger(__name__)
 
 # DXF INSUNITS value for metres
 _INSUNITS_METRES = 6
@@ -71,9 +76,13 @@ class EzdxfDriver:
         self._draw_plot_boundary(msp, building)
         self._draw_setbacks(msp, building, floor_plan)
         self._draw_rooms(msp, floor_plan)
+        self._draw_columns(msp, floor_plan.columns)
         self._draw_north_arrow(msp, building)
         self._draw_title_block(msp, building, floor_plan)
         self._add_dimensions(msp, building, floor_plan)
+
+        # Paper Space layout tab (professional A1 sheet at 1:100)
+        self._create_paper_space_layout(doc, floor_plan, building, floor_plan.floor)
 
         doc.saveas(output_path)
         return doc
@@ -395,4 +404,176 @@ class EzdxfDriver:
             dimstyle=dimstyle,
             override={"dimtxt": self.DIM_TEXT_HEIGHT, "dimclrd": 8, "dimclrt": 8},
             dxfattribs={"layer": LayerManager.DIMENSIONS},
+        )
+
+    # ------------------------------------------------------------------
+    # Structural columns
+    # ------------------------------------------------------------------
+
+    def _draw_columns(self, msp: Modelspace, columns: list[ColumnPosition]) -> None:
+        """Draw structural RCC columns as filled squares (NBC 105 §5.3)."""
+        for col in columns:
+            pts = [
+                (col.x, col.y),
+                (col.x + col.width, col.y),
+                (col.x + col.width, col.y + col.depth),
+                (col.x, col.y + col.depth),
+            ]
+            # Filled square using SOLID entity (4 points, last repeats first)
+            msp.add_solid(
+                pts,
+                dxfattribs={"layer": LayerManager.COLUMN, "color": 5},
+            )
+            # Outline for clarity
+            msp.add_lwpolyline(
+                pts + [pts[0]],
+                dxfattribs={"layer": LayerManager.COLUMN},
+            )
+
+    # ------------------------------------------------------------------
+    # Paper Space layout (A1 sheet, 1:100 scale)
+    # ------------------------------------------------------------------
+
+    def _create_paper_space_layout(
+        self,
+        doc: Drawing,
+        floor_plan: FloorPlan,
+        building: BuildingDesign,
+        floor_num: int,
+    ) -> None:
+        """
+        Create an A1 Paper Space layout tab at nominal 1:100 scale.
+
+        Paper space coordinates are in mm (A1 = 841mm × 594mm).
+        The viewport shows the model (in metres) scaled to fit on the sheet.
+        The existing modelspace content is preserved for backward compatibility.
+        """
+        try:
+            layout_name = f"Floor {floor_num} Plan"
+            # Skip if layout already exists
+            existing = [lyt.name for lyt in doc.layouts]
+            if layout_name in existing:
+                return
+
+            layout = doc.new_layout(layout_name)
+
+            # A1 landscape: 841mm × 594mm
+            # Title block occupies bottom 55mm strip
+            # Remaining for viewport: 841 × (594 - 55) = 841 × 539mm
+            title_height = 55.0   # mm
+            margin = 20.0         # mm margins all around
+            vp_w = 841.0 - 2 * margin           # ≈ 801mm
+            vp_h = 594.0 - title_height - margin  # ≈ 519mm
+            vp_cx = 841.0 / 2                    # 420.5mm
+            vp_cy = title_height + vp_h / 2      # 55 + 259.5 ≈ 314.5mm
+
+            # Model view height — show full building with 15% margin
+            view_h_model = max(
+                building.plot_depth,
+                floor_plan.buildable_zone.depth,
+            ) * 1.15
+
+            vp = layout.add_viewport(
+                center=(vp_cx, vp_cy),
+                size=(vp_w, vp_h),
+                view_center_point=(
+                    building.plot_width / 2,
+                    building.plot_depth / 2,
+                ),
+                view_height=view_h_model,
+            )
+            # Activate viewport (status bit 1 = ON)
+            try:
+                vp.dxf.status = 1
+            except Exception:
+                pass  # older ezdxf versions may not support direct status set
+
+            self._draw_paper_title_block(layout, building, floor_num)
+
+        except Exception as exc:
+            logger.warning(
+                "ezdxf_driver: Paper Space layout creation failed for floor %d: %s",
+                floor_num, exc,
+            )
+
+    def _draw_paper_title_block(
+        self,
+        layout: object,
+        building: BuildingDesign,
+        floor_num: int,
+    ) -> None:
+        """
+        Draw an ISO/AIA-standard title block at the bottom of the A1 sheet.
+
+        All coordinates in mm (paper space).
+        """
+        # Horizontal strip at bottom: (0, 0) → (841, 55)
+        layout.add_lwpolyline(
+            [(0, 0), (841, 0), (841, 55), (0, 55), (0, 0)],
+            dxfattribs={"layer": LayerManager.TITLE_BLOCK},
+        )
+        # Vertical divider: separate left fields from right fields
+        layout.add_line(
+            (550, 0), (550, 55),
+            dxfattribs={"layer": LayerManager.TITLE_BLOCK},
+        )
+
+        # Left side: project info
+        layout.add_text(
+            f"Project: {building.project_id}",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 5,
+                "insert": (10, 42),
+            },
+        )
+        layout.add_text(
+            f"Floor {floor_num} Plan  —  Jurisdiction: {building.jurisdiction}",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 7,
+                "insert": (10, 28),
+            },
+        )
+        layout.add_text(
+            "Scale 1:100   Sheet: A1 Landscape   Units: metres",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 4,
+                "insert": (10, 14),
+            },
+        )
+        layout.add_text(
+            "Generated by CivilEngineer AI  |  For review purposes only",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 3.5,
+                "insert": (10, 5),
+            },
+        )
+
+        # Right side: date and sheet info
+        layout.add_text(
+            f"Date: {date.today().isoformat()}",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 4,
+                "insert": (560, 42),
+            },
+        )
+        layout.add_text(
+            f"Building: {building.plot_width:.1f}m × {building.plot_depth:.1f}m",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 4,
+                "insert": (560, 28),
+            },
+        )
+        layout.add_text(
+            f"Floors: {building.num_floors}   Sheet {floor_num} of {building.num_floors}",
+            dxfattribs={
+                "layer": LayerManager.TITLE_BLOCK,
+                "height": 4,
+                "insert": (560, 14),
+            },
         )

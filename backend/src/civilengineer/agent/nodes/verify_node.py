@@ -10,6 +10,7 @@ revise loop.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from langchain_core.messages import AIMessage
 
@@ -80,12 +81,28 @@ def verify_node(state: AgentState) -> dict:
                 f"{_MAX_REVISE}): {violation_summary}"
             )
 
+        event = {
+            "node": "verify",
+            "type": "compliance_checked",
+            "iteration": revision_count,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "data": {
+                "is_compliant": report.compliant,
+                "violation_count": hard_count,
+                "warning_count": soft_count,
+                "advisory_count": adv_count,
+                "violations": [v.model_dump() for v in report.violations],
+                "warnings": [w.model_dump() for w in report.warnings],
+                "advisories": [a.model_dump() for a in report.advisories],
+            },
+        }
         return {
             "compliance_report": report.model_dump(),
             "should_revise": should_revise,
             "warnings": warnings,
             "errors": errors,
             "messages": [AIMessage(content=status_msg)],
+            "decision_events": [event],
         }
 
     except Exception as exc:

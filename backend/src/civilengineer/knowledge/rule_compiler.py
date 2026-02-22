@@ -1,11 +1,15 @@
 """
-Rule compiler — loads and validates rules.json into DesignRule objects.
+Rule compiler — loads DesignRule objects from the database or bundled JSON.
 
-The compiler:
-  1. Reads the bundled JSON file (or a custom path)
-  2. Validates every record with the DesignRule Pydantic model
-  3. Auto-generates embedding_text if the field is empty
-  4. Returns a RuleSet ready for the rule engine or ChromaDB indexer
+Two loading paths:
+  1. load_rules_from_db(session, jurisdiction)  — DB-first (production)
+     Queries JurisdictionRuleModel; falls back to load_rules() if the DB
+     has no rules for the requested jurisdiction.
+
+  2. load_rules(path, jurisdiction)              — JSON-only (tests / seed)
+     Reads the bundled rules.json (or a custom path). Unchanged API.
+
+Both return a RuleSet ready for the rule engine or ChromaDB indexer.
 """
 
 from __future__ import annotations
@@ -96,3 +100,71 @@ def load_rules(
         code_version=code_version_val,
         rules=active,
     )
+
+
+# ---------------------------------------------------------------------------
+# DB-first loading
+# ---------------------------------------------------------------------------
+
+
+async def load_rules_from_db(
+    session: object,  # AsyncSession — typed loosely to avoid hard import
+    jurisdiction: str,
+    code_version: str | None = None,
+) -> RuleSet:
+    """
+    Load active rules from JurisdictionRuleModel for a given jurisdiction.
+
+    Falls back to load_rules(jurisdiction=jurisdiction) when the DB has no
+    matching rules (e.g. fresh environment before seeding, or unit tests
+    that don't have a database).
+
+    Args:
+        session      : SQLAlchemy AsyncSession (from get_session or AsyncSessionLocal).
+        jurisdiction : e.g. "NP-KTM", "IN-MH", "US-CA".
+        code_version : Optional version filter (e.g. "NBC_2020").
+
+    Returns:
+        RuleSet containing all active DesignRule objects.
+    """
+    # Import lazily so the compiler is importable without SQLAlchemy installed
+    from civilengineer.db.repositories.rule_repository import (  # noqa: PLC0415
+        get_active_rules,
+        model_to_design_rule,
+    )
+
+    try:
+        models = await get_active_rules(session, jurisdiction, code_version)
+    except Exception as exc:
+        logger.warning(
+            "load_rules_from_db: DB query failed (%s); falling back to bundled JSON.",
+            exc,
+        )
+        return load_rules(jurisdiction=jurisdiction)
+
+    if not models:
+        logger.warning(
+            "load_rules_from_db: no active rules in DB for jurisdiction=%s; "
+            "falling back to bundled JSON.",
+            jurisdiction,
+        )
+        return load_rules(jurisdiction=jurisdiction)
+
+    rules: list[DesignRule] = []
+    for m in models:
+        rule = model_to_design_rule(m)
+        if not rule.embedding_text:
+            rule = rule.model_copy(
+                update={"embedding_text": _auto_embedding_text(rule)}
+            )
+        rules.append(rule)
+
+    active = [r for r in rules if r.is_active]
+    logger.info(
+        "load_rules_from_db: loaded %d active rules for %s from database.",
+        len(active),
+        jurisdiction,
+    )
+
+    code_ver = models[0].code_version if models else (code_version or "")
+    return RuleSet(jurisdiction=jurisdiction, code_version=code_ver, rules=active)

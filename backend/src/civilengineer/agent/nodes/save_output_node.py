@@ -9,6 +9,7 @@ Writes:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -67,9 +68,44 @@ def save_output_node(state: AgentState) -> dict:
     summary = "\n".join(summary_lines)
     logger.info(summary)
 
+    # Persist ComplianceReportModel to DB (best-effort; does not block pipeline)
+    if report_dict and state.get("project_id") and state.get("session_id"):
+        _persist_compliance_to_db(state, report_path)
+
     return {
         "report_path": report_path,
         "messages": [AIMessage(content=summary)],
         "warnings": warnings,
         "errors": errors,
     }
+
+
+def _persist_compliance_to_db(state: AgentState, report_path: str | None) -> None:
+    """Write ComplianceReportModel to DB via asyncio.run() (best-effort, no crash on failure)."""
+    try:
+        asyncio.run(_persist_compliance_async(state, report_path))
+    except RuntimeError:
+        # Event loop already running — the job orchestrator will persist via decision_events
+        pass
+    except Exception as exc:
+        logger.warning("save_output_node: could not persist compliance report to DB: %s", exc)
+
+
+async def _persist_compliance_async(state: AgentState, report_path: str | None) -> None:
+    from civilengineer.db.repositories.decisions_repository import (  # noqa: PLC0415
+        write_compliance_report,
+    )
+    from civilengineer.db.session import AsyncSessionLocal  # noqa: PLC0415
+
+    project = state.get("project") or {}
+    async with AsyncSessionLocal() as session:
+        await write_compliance_report(
+            session,
+            project_id=state["project_id"],
+            firm_id=project.get("firm_id", ""),
+            job_id=project.get("job_id", state.get("session_id", "")),
+            session_id=state["session_id"],
+            compliance_report=state.get("compliance_report") or {},
+            report_path=report_path,
+        )
+        await session.commit()

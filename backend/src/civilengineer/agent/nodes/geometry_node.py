@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from civilengineer.agent.state import AgentState
 from civilengineer.geometry_engine.layout_generator import generate_floor_plans
@@ -102,11 +103,29 @@ def geometry_node(state: AgentState) -> dict:
             sum(len(fp.wall_segments) for fp in floor_plans),
         )
 
+        room_types = [
+            r.room_type.value if hasattr(r.room_type, "value") else str(r.room_type)
+            for fp in floor_plans
+            for r in fp.rooms
+        ]
+        event = {
+            "node": "geometry",
+            "type": "geometry_generated",
+            "iteration": state.get("revision_count", 0),
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "data": {
+                "floor_count": len(floor_plans),
+                "total_rooms": total_rooms,
+                "room_types": room_types,
+                "wall_segments": sum(len(fp.wall_segments) for fp in floor_plans),
+            },
+        }
         return {
             "floor_plans": floor_plan_dicts,
             "building_design": design.model_dump(),
             "warnings": warnings,
             "errors": errors,
+            "decision_events": [event],
         }
 
     except Exception as exc:

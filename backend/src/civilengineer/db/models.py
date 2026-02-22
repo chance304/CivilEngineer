@@ -7,6 +7,7 @@ All tables include firm_id for multi-tenant row-level security.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 
 def _utcnow() -> datetime:
@@ -188,3 +189,144 @@ class ExtractedRuleModel(SQLModel, table=True):
     __table_args__ = (
         sa.Index("ix_extracted_rules_doc_review", "doc_id", "reviewer_approved"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Decision-tracking tables (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class ProjectChangeLogModel(SQLModel, table=True):
+    """Per-field change history for projects — who changed what and when."""
+    __tablename__ = "project_change_log"
+
+    log_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    changed_by: str = Field(foreign_key="users.user_id")
+    changed_at: datetime = Field(default_factory=_utcnow)
+    field_name: str        # "name", "requirements", "plot_info", "properties", etc.
+    old_value: dict | None = Field(default=None, sa_column=Column(JSON))
+    new_value: dict | None = Field(default=None, sa_column=Column(JSON))
+    change_source: str = "api"   # "api" | "pipeline"
+
+    __table_args__ = (
+        sa.Index("ix_project_change_log_project_id", "project_id"),
+    )
+
+
+class RequirementsVersionModel(SQLModel, table=True):
+    """Snapshot of DesignRequirements captured at the start of each design job."""
+    __tablename__ = "requirements_versions"
+
+    version_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    job_id: str = Field(foreign_key="design_jobs.job_id", index=True)
+    session_id: str = Field(index=True)
+    captured_at: datetime = Field(default_factory=_utcnow)
+    requirements: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    version_number: int = 1    # monotonically increasing per project
+
+
+class DesignDecisionLogModel(SQLModel, table=True):
+    """Generic one-record-per-node execution log for the design pipeline."""
+    __tablename__ = "design_decision_log"
+
+    decision_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    job_id: str = Field(foreign_key="design_jobs.job_id", index=True)
+    session_id: str = Field(index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    node_name: str            # "validate", "plan", "geometry", "draw"
+    occurred_at: datetime = Field(default_factory=_utcnow)
+    decision_type: str        # "validation_result", "zone_computed", "geometry_generated", etc.
+    iteration: int = 0        # revision cycle number
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+    __table_args__ = (
+        sa.Index("ix_decision_log_project_job", "project_id", "job_id"),
+    )
+
+
+class SolverIterationLogModel(SQLModel, table=True):
+    """Detailed per-solve-run record: SAT/UNSAT, placement stats, relaxation info."""
+    __tablename__ = "solver_iteration_log"
+
+    iteration_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    job_id: str = Field(foreign_key="design_jobs.job_id", index=True)
+    session_id: str = Field(index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    iteration_number: int
+    started_at: datetime = Field(default_factory=_utcnow)
+    solver_status: str           # "SAT" | "UNSAT" | "PARTIAL" | "TIMEOUT"
+    placed_room_count: int = 0
+    unplaced_room_count: int = 0
+    solver_time_s: float = 0.0
+    relaxation_type: str | None = None   # None for SAT, else "remove_optional" etc.
+    rooms_removed: list = Field(default_factory=list, sa_column=Column(JSON))
+    warnings: list = Field(default_factory=list, sa_column=Column(JSON))
+
+    __table_args__ = (
+        sa.Index("ix_solver_log_project_job", "project_id", "job_id"),
+    )
+
+
+class ComplianceReportModel(SQLModel, table=True):
+    """ComplianceReport persisted to PostgreSQL (also written as JSON file)."""
+    __tablename__ = "compliance_reports"
+
+    report_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    job_id: str = Field(foreign_key="design_jobs.job_id", index=True)
+    session_id: str = Field(index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    generated_at: datetime = Field(default_factory=_utcnow)
+    is_compliant: bool = False
+    violation_count: int = 0
+    warning_count: int = 0
+    advisory_count: int = 0
+    hard_violations: list = Field(default_factory=list, sa_column=Column(JSON))
+    soft_warnings: list = Field(default_factory=list, sa_column=Column(JSON))
+    advisories: list = Field(default_factory=list, sa_column=Column(JSON))
+    report_path: str | None = None
+
+    __table_args__ = (
+        sa.Index("ix_compliance_reports_project_job", "project_id", "job_id"),
+    )
+
+
+class DesignApprovalModel(SQLModel, table=True):
+    """Engineer interrupt decision — approve / revise / abort the floor plan."""
+    __tablename__ = "design_approvals"
+
+    approval_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    job_id: str = Field(foreign_key="design_jobs.job_id", index=True)
+    session_id: str = Field(index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    approved_by: str = Field(foreign_key="users.user_id")
+    approval_type: str = "floor_plan"   # "floor_plan" | "requirements"
+    decision: str                        # "approve" | "revise" | "abort"
+    feedback_text: str = ""
+    occurred_at: datetime = Field(default_factory=_utcnow)
+    revision_count: int = 0
+
+
+class ElevationDecisionModel(SQLModel, table=True):
+    """Roof type, parapet height, facade material chosen during draw_node."""
+    __tablename__ = "elevation_decisions"
+
+    elevation_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    job_id: str = Field(foreign_key="design_jobs.job_id", index=True)
+    session_id: str = Field(index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    decided_at: datetime = Field(default_factory=_utcnow)
+    roof_type: str = ""
+    parapet_height_m: float | None = None
+    facade_material: str = ""
+    num_floors: int = 1
+    floor_heights: list = Field(default_factory=list, sa_column=Column(JSON))
+    output_paths: list = Field(default_factory=list, sa_column=Column(JSON))

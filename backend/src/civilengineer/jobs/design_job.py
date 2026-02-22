@@ -159,6 +159,31 @@ async def _run_design_pipeline_async(
             "progress_pct": 10,
         })
 
+        # ------------------------------------------------------------------ #
+        # 2b. Snapshot requirements at job start (for first invocation)      #
+        # ------------------------------------------------------------------ #
+        if resume_value is None and requirements_dict:
+            await _write_requirements_version(
+                job_id=job_id,
+                project_id=project_id,
+                firm_id=firm_id,
+                session_id=session_id,
+                requirements=requirements_dict,
+            )
+
+        # ------------------------------------------------------------------ #
+        # 2c. Record approval decision when resuming from human_review       #
+        # ------------------------------------------------------------------ #
+        if resume_value is not None:
+            await _write_approval_from_resume(
+                job_id=job_id,
+                project_id=project_id,
+                firm_id=firm_id,
+                session_id=session_id,
+                user_id=user_id,
+                resume_value=resume_value,
+            )
+
         # LangGraph invoke — runs synchronously (nodes are sync)
         graph.invoke(graph_input, config=config)
 
@@ -167,6 +192,15 @@ async def _run_design_pipeline_async(
         # ------------------------------------------------------------------ #
         snapshot = graph.get_state(config)
         next_nodes = snapshot.next if snapshot else ()
+
+        # Persist accumulated decision events (best-effort)
+        await _persist_pipeline_events(
+            project_id=project_id,
+            job_id=job_id,
+            session_id=session_id,
+            firm_id=firm_id,
+            snapshot_values=snapshot.values if snapshot else {},
+        )
 
         if next_nodes:
             # Interrupted — waiting for human input
@@ -399,3 +433,113 @@ def _summarise_floor_plans(floor_plan_dicts: list[dict]) -> dict:
 def make_job_id() -> str:
     """Generate a unique design job ID."""
     return f"job_{uuid.uuid4().hex[:12]}"
+
+
+# --------------------------------------------------------------------------- #
+# Decision-tracking helpers                                                    #
+# --------------------------------------------------------------------------- #
+
+
+async def _write_requirements_version(
+    job_id: str,
+    project_id: str,
+    firm_id: str,
+    session_id: str,
+    requirements: dict,
+) -> None:
+    """Snapshot requirements at the start of a fresh job run."""
+    try:
+        from civilengineer.db.repositories.decisions_repository import (  # noqa: PLC0415
+            write_requirements_version,
+        )
+        from civilengineer.db.session import AsyncSessionLocal  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as session:
+            await write_requirements_version(
+                session,
+                project_id=project_id,
+                firm_id=firm_id,
+                job_id=job_id,
+                session_id=session_id,
+                requirements=requirements,
+            )
+            await session.commit()
+    except Exception as exc:
+        logger.warning("_write_requirements_version failed for job %s: %s", job_id, exc)
+
+
+async def _write_approval_from_resume(
+    job_id: str,
+    project_id: str,
+    firm_id: str,
+    session_id: str,
+    user_id: str,
+    resume_value: str,
+) -> None:
+    """Record engineer's interrupt decision when resuming from human_review."""
+    try:
+        from civilengineer.db.repositories.decisions_repository import (  # noqa: PLC0415
+            write_design_approval,
+        )
+        from civilengineer.db.session import AsyncSessionLocal  # noqa: PLC0415
+
+        resume_lower = resume_value.strip().lower()
+        if any(w in resume_lower for w in ("approve", "yes", "ok", "good", "looks")):
+            decision = "approve"
+        elif any(w in resume_lower for w in ("revise", "change", "no", "modify", "redo")):
+            decision = "revise"
+        elif any(w in resume_lower for w in ("abort", "cancel", "stop")):
+            decision = "abort"
+        else:
+            decision = "approve"  # default: treat unknown as approve
+
+        async with AsyncSessionLocal() as session:
+            await write_design_approval(
+                session,
+                project_id=project_id,
+                firm_id=firm_id,
+                job_id=job_id,
+                session_id=session_id,
+                approved_by=user_id,
+                decision=decision,
+                feedback_text=resume_value[:1000],
+                approval_type="floor_plan",
+            )
+            await session.commit()
+    except Exception as exc:
+        logger.warning("_write_approval_from_resume failed for job %s: %s", job_id, exc)
+
+
+async def _persist_pipeline_events(
+    project_id: str,
+    job_id: str,
+    session_id: str,
+    firm_id: str,
+    snapshot_values: dict,
+) -> None:
+    """Persist accumulated decision_events from the graph snapshot to the DB."""
+    try:
+        events = (snapshot_values or {}).get("decision_events") or []
+        if not events:
+            return
+
+        from civilengineer.db.repositories.decisions_repository import (  # noqa: PLC0415
+            persist_decision_events,
+        )
+        from civilengineer.db.session import AsyncSessionLocal  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as session:
+            await persist_decision_events(
+                session,
+                events=events,
+                project_id=project_id,
+                job_id=job_id,
+                session_id=session_id,
+                firm_id=firm_id,
+            )
+            await session.commit()
+        logger.debug(
+            "_persist_pipeline_events: persisted %d events for job=%s", len(events), job_id
+        )
+    except Exception as exc:
+        logger.warning("_persist_pipeline_events failed for job %s: %s", job_id, exc)

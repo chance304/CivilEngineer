@@ -18,8 +18,14 @@ from sqlmodel import select
 
 from civilengineer.auth.rbac import Permission, require_permission
 from civilengineer.db.models import (
+    ComplianceReportModel,
+    DesignApprovalModel,
+    DesignDecisionLogModel,
     ProjectAssignmentModel,
+    ProjectChangeLogModel,
     ProjectModel,
+    RequirementsVersionModel,
+    SolverIterationLogModel,
 )
 from civilengineer.db.session import get_session
 from civilengineer.schemas.auth import User, UserRole
@@ -158,15 +164,31 @@ async def update_project(
     current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_UPDATE))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Project:
+    from civilengineer.db.repositories.decisions_repository import (  # noqa: PLC0415
+        log_project_change,
+    )
+
     row = await _get_project_or_404(project_id, current_user, session)
 
     if body.name is not None:
+        await log_project_change(
+            session, project_id, current_user.firm_id, current_user.user_id,
+            "name", {"value": row.name}, {"value": body.name},
+        )
         row.name = body.name
     if body.client_name is not None:
+        await log_project_change(
+            session, project_id, current_user.firm_id, current_user.user_id,
+            "client_name", {"value": row.client_name}, {"value": body.client_name},
+        )
         row.client_name = body.client_name
     if body.site_address is not None:
         row.site_address = body.site_address
     if body.properties is not None:
+        await log_project_change(
+            session, project_id, current_user.firm_id, current_user.user_id,
+            "properties", row.properties or {}, body.properties,
+        )
         row.properties = {**(row.properties or {}), **body.properties}
 
     row.updated_at = datetime.now(UTC)
@@ -185,6 +207,133 @@ async def archive_project(
     row.status = "archived"
     row.updated_at = datetime.now(UTC)
     session.add(row)
+
+
+# ------------------------------------------------------------------
+# Decision history endpoints
+# ------------------------------------------------------------------
+
+
+@router.get("/{project_id}/decisions", response_model=list[dict])
+async def get_project_decisions(
+    project_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_READ))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    job_id: str | None = None,
+) -> list[dict]:
+    """Return all pipeline node decision events for a project."""
+    await _get_project_or_404(project_id, current_user, session)
+    query = select(DesignDecisionLogModel).where(
+        DesignDecisionLogModel.project_id == project_id,
+        DesignDecisionLogModel.firm_id == current_user.firm_id,
+    )
+    if job_id:
+        query = query.where(DesignDecisionLogModel.job_id == job_id)
+    query = query.order_by(DesignDecisionLogModel.occurred_at.asc())
+    result = await session.execute(query)
+    rows = result.scalars().all()
+    return [r.model_dump() for r in rows]
+
+
+@router.get("/{project_id}/solver-iterations", response_model=list[dict])
+async def get_solver_iterations(
+    project_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_READ))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    job_id: str | None = None,
+) -> list[dict]:
+    """Return all constraint-solver run records for a project."""
+    await _get_project_or_404(project_id, current_user, session)
+    query = select(SolverIterationLogModel).where(
+        SolverIterationLogModel.project_id == project_id,
+        SolverIterationLogModel.firm_id == current_user.firm_id,
+    )
+    if job_id:
+        query = query.where(SolverIterationLogModel.job_id == job_id)
+    query = query.order_by(SolverIterationLogModel.started_at.asc())
+    result = await session.execute(query)
+    rows = result.scalars().all()
+    return [r.model_dump() for r in rows]
+
+
+@router.get("/{project_id}/compliance-reports", response_model=list[dict])
+async def get_compliance_reports(
+    project_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_READ))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    """Return all compliance reports for a project."""
+    await _get_project_or_404(project_id, current_user, session)
+    result = await session.execute(
+        select(ComplianceReportModel)
+        .where(
+            ComplianceReportModel.project_id == project_id,
+            ComplianceReportModel.firm_id == current_user.firm_id,
+        )
+        .order_by(ComplianceReportModel.generated_at.desc())
+    )
+    rows = result.scalars().all()
+    return [r.model_dump() for r in rows]
+
+
+@router.get("/{project_id}/approvals", response_model=list[dict])
+async def get_design_approvals(
+    project_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_READ))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    """Return all engineer approval decisions for a project."""
+    await _get_project_or_404(project_id, current_user, session)
+    result = await session.execute(
+        select(DesignApprovalModel)
+        .where(
+            DesignApprovalModel.project_id == project_id,
+            DesignApprovalModel.firm_id == current_user.firm_id,
+        )
+        .order_by(DesignApprovalModel.occurred_at.desc())
+    )
+    rows = result.scalars().all()
+    return [r.model_dump() for r in rows]
+
+
+@router.get("/{project_id}/change-log", response_model=list[dict])
+async def get_project_change_log(
+    project_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_READ))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    """Return the field-level change history for a project."""
+    await _get_project_or_404(project_id, current_user, session)
+    result = await session.execute(
+        select(ProjectChangeLogModel)
+        .where(
+            ProjectChangeLogModel.project_id == project_id,
+            ProjectChangeLogModel.firm_id == current_user.firm_id,
+        )
+        .order_by(ProjectChangeLogModel.changed_at.desc())
+    )
+    rows = result.scalars().all()
+    return [r.model_dump() for r in rows]
+
+
+@router.get("/{project_id}/requirements-versions", response_model=list[dict])
+async def get_requirements_versions(
+    project_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.PROJECT_READ))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    """Return all requirements snapshots for a project (one per job run)."""
+    await _get_project_or_404(project_id, current_user, session)
+    result = await session.execute(
+        select(RequirementsVersionModel)
+        .where(
+            RequirementsVersionModel.project_id == project_id,
+            RequirementsVersionModel.firm_id == current_user.firm_id,
+        )
+        .order_by(RequirementsVersionModel.version_number.asc())
+    )
+    rows = result.scalars().all()
+    return [r.model_dump() for r in rows]
 
 
 # ------------------------------------------------------------------

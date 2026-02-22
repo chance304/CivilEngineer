@@ -144,9 +144,21 @@ class RuleRetriever:
         rule_ids: list[str] = results["ids"][0] if results["ids"] else []
         metadatas: list[dict] = results["metadatas"][0] if results["metadatas"] else []
 
-        # Reconstruct minimal DesignRule objects from metadata
+        # Reconstruct DesignRule objects from metadata.
+        # Prefer full_rule_json (lossless) over field-by-field reconstruction.
         rules = []
         for rule_id, meta in zip(rule_ids, metadatas):
+            if full_json := meta.get("full_rule_json"):
+                try:
+                    rules.append(DesignRule.model_validate_json(full_json))
+                    continue
+                except Exception as exc:
+                    logger.warning(
+                        "Could not parse full_rule_json for %s: %s; falling back.",
+                        rule_id, exc,
+                    )
+            # Legacy fallback: reconstruct from individual metadata fields
+            raw_num = meta.get("numeric_value")
             rules.append(
                 DesignRule(
                     rule_id=rule_id,
@@ -158,8 +170,8 @@ class RuleRetriever:
                     name=meta.get("name", ""),
                     description="",
                     source_section=meta.get("source_section", ""),
-                    applies_to=meta.get("applies_to", "").split(","),
-                    numeric_value=float(v) if (v := meta.get("numeric_value")) else None,
+                    applies_to=[a for a in meta.get("applies_to", "").split(",") if a],
+                    numeric_value=float(raw_num) if raw_num else None,
                     unit=meta.get("unit") or None,
                     embedding_text="",
                 )

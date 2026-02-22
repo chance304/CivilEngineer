@@ -325,6 +325,30 @@ def _pick_upper_floor(
 # ---------------------------------------------------------------------------
 
 
+def _dims_from_rules(rules: list[DesignRule]) -> dict[str, tuple[float, float]]:
+    """
+    Extract per-room-type default dimensions from ``room_default_dim`` rules.
+
+    Rules seeded via ``scripts/seed_jurisdiction_rules.py`` carry
+    ``rule_type="room_default_dim"`` and store the target width/depth in
+    ``conditions`` (keys: ``"width"``, ``"depth"``).  Falls back to
+    ``numeric_value`` for the missing dimension.
+
+    Returns a mapping of room_type string → (width_m, depth_m).
+    """
+    result: dict[str, tuple[float, float]] = {}
+    for rule in rules:
+        if rule.rule_type != "room_default_dim":
+            continue
+        if not rule.applies_to or rule.numeric_value is None:
+            continue
+        w: float = rule.conditions.get("width", rule.numeric_value)
+        d: float = rule.conditions.get("depth", rule.numeric_value)
+        for room_type in rule.applies_to:
+            result[room_type] = (float(w), float(d))
+    return result
+
+
 def _size_rooms(
     rooms_with_floors: list[tuple[RoomRequirement, int]],
     rules: list[DesignRule],
@@ -352,13 +376,18 @@ def _size_rooms(
                     min_dim_rules.get(app, 0.0), rule.numeric_value
                 )
 
+    # Merge rule-derived default dimensions over the hardcoded table.
+    # room_default_dim rules (seeded from _DEFAULT_DIMS via seed script) override
+    # the built-in values when available, making the solver jurisdiction-aware.
+    rule_dims = _dims_from_rules(rules)
+
     sized: list[SizedRoom] = []
     for req, floor in rooms_with_floors:
         rtype = req.room_type
         rtype_str = rtype.value
 
-        # Target dimensions from defaults
-        target_w, target_d = _DEFAULT_DIMS.get(rtype, (2.5, 2.5))
+        # Target dimensions: rule-derived dims take priority over hardcoded defaults
+        target_w, target_d = rule_dims.get(rtype_str) or _DEFAULT_DIMS.get(rtype, (2.5, 2.5))
 
         # Apply min_area constraint
         req_min_area = req.min_area or min_area_rules.get(rtype_str, 0.0)

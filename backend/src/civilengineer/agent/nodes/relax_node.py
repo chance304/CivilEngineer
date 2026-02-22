@@ -17,6 +17,7 @@ state["revision_count"] tracks how many times we've relaxed.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from langchain_core.messages import AIMessage
 
@@ -72,12 +73,39 @@ def relax_node(state: AgentState) -> dict:
             revision_count + 1, relaxation_msg, len(rooms),
         )
 
+        rooms_before = [
+            r.room_type.value if hasattr(r.room_type, "value") else str(r.room_type)
+            for r in DesignRequirements.model_validate(req_dict).rooms
+        ]
+        rooms_after = [
+            r.room_type.value if hasattr(r.room_type, "value") else str(r.room_type)
+            for r in rooms
+        ]
+        rooms_removed = [rt for rt in rooms_before if rt not in rooms_after]
+
+        event = {
+            "node": "relax",
+            "type": "relaxation_applied",
+            "iteration": revision_count,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "data": {
+                "relaxation_type": relaxation_msg,
+                "rooms_removed": rooms_removed,
+                "revision_count": revision_count + 1,
+                "status": "UNSAT",  # relax is always triggered by UNSAT
+                "placed_count": 0,
+                "unplaced_count": len(rooms_before),
+                "solver_time_s": 0.0,
+                "warnings": warnings,
+            },
+        }
         return {
             "requirements": new_req_dict,
             "revision_count": revision_count + 1,
             "warnings": warnings,
             "errors": [e for e in errors if "UNSAT" not in e],  # clear UNSAT error
             "messages": [AIMessage(content=f"Relaxation applied: {relaxation_msg}")],
+            "decision_events": [event],
         }
 
     except Exception as exc:

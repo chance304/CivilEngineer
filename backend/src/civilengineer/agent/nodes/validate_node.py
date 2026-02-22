@@ -10,6 +10,7 @@ graph can route to END or a human-review interrupt.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from civilengineer.agent.state import AgentState
 from civilengineer.input_layer.validator import validate_requirements
@@ -46,11 +47,23 @@ def validate_node(state: AgentState) -> dict:
             result.is_valid, len(result.errors), len(result.warnings),
         )
 
+        event = {
+            "node": "validate",
+            "type": "validation_result",
+            "iteration": state.get("revision_count", 0),
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "data": {
+                "passed": result.is_valid,
+                "errors": result.errors,
+                "warnings": result.warnings,
+            },
+        }
         return {
             "validation_errors":   result.errors,
             "validation_warnings": result.warnings,
             "errors":  errors + result.errors,
             "warnings": warnings + result.warnings,
+            "decision_events": [event],
         }
     except Exception as exc:
         msg = f"validate_node error: {exc}"

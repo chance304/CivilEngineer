@@ -1,25 +1,35 @@
 """
-Admin router — LLM config and firm settings (firm_admin only).
+Admin router — LLM config, firm settings, and building code management (firm_admin only).
 
-GET    /api/v1/admin/llm-config        → get current LLM config (key masked)
-PUT    /api/v1/admin/llm-config        → set LLM provider / model / key
-POST   /api/v1/admin/llm-config/test   → test LLM connectivity
-DELETE /api/v1/admin/llm-config        → remove firm config (revert to system default)
+LLM config:
+  GET    /api/v1/admin/llm-config              → current LLM config (key masked)
+  PUT    /api/v1/admin/llm-config              → set LLM provider / model / key
+  POST   /api/v1/admin/llm-config/test         → test LLM connectivity
+  DELETE /api/v1/admin/llm-config              → revert to system default
+
+Building codes (PDF → rules workflow):
+  POST   /api/v1/admin/building-codes/upload           → upload PDF → S3 → DB record
+  GET    /api/v1/admin/building-codes                  → list documents for firm
+  GET    /api/v1/admin/building-codes/{doc_id}/rules   → list extracted rules (review queue)
+  PUT    /api/v1/admin/building-codes/{doc_id}/rules/{rule_id}  → approve / reject rule
+  POST   /api/v1/admin/building-codes/{doc_id}/activate         → promote approved rules → DB
 """
 
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from civilengineer.auth.password import decrypt_api_key, encrypt_api_key
 from civilengineer.auth.rbac import Permission, require_permission
 from civilengineer.core.config import get_settings
-from civilengineer.db.models import FirmModel
+from civilengineer.db.models import BuildingCodeDocumentModel, FirmModel
+from civilengineer.db.repositories import rule_repository
 from civilengineer.db.session import get_session
 from civilengineer.schemas.auth import (
     LLMConfigResponse,
@@ -27,6 +37,13 @@ from civilengineer.schemas.auth import (
     LLMTestResult,
     User,
 )
+from civilengineer.schemas.building_codes import (
+    ActivateRulesResponse,
+    BuildingCodeDocumentResponse,
+    ExtractedRuleResponse,
+    RuleReviewRequest,
+)
+from civilengineer.storage import s3_backend
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -186,3 +203,263 @@ async def delete_llm_config(
     firm_settings.pop("llm_config", None)
     firm.settings = firm_settings
     session.add(firm)
+
+
+# ===========================================================================
+# Building code PDF upload and rule review endpoints
+# ===========================================================================
+
+_BUCKET = "building-codes"
+_ALLOWED_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
+
+
+def _doc_to_response(doc: BuildingCodeDocumentModel) -> BuildingCodeDocumentResponse:
+    return BuildingCodeDocumentResponse(
+        doc_id=doc.doc_id,
+        firm_id=doc.firm_id,
+        jurisdiction=doc.jurisdiction,
+        code_name=doc.code_name,
+        code_version=doc.code_version,
+        uploaded_by=doc.uploaded_by,
+        uploaded_at=doc.uploaded_at,
+        status=doc.status,
+        s3_key=doc.s3_key,
+        extraction_job_id=doc.extraction_job_id,
+        rules_extracted=doc.rules_extracted,
+        rules_approved=doc.rules_approved,
+    )
+
+
+@router.post(
+    "/building-codes/upload",
+    response_model=BuildingCodeDocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_building_code(
+    file: Annotated[UploadFile, File(description="Official building code PDF.")],
+    jurisdiction: Annotated[str, Query(description="Jurisdiction code e.g. NP-KTM")],
+    code_name: Annotated[str, Query(description="Human-readable code name e.g. 'NBC 205:2020'")],
+    code_version: Annotated[str, Query(description="Version identifier e.g. 'NBC_2020'")],
+    current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> BuildingCodeDocumentResponse:
+    """
+    Upload an official building code PDF.
+
+    The file is stored in S3/MinIO and a BuildingCodeDocumentModel record is created
+    with status="uploaded". Trigger rule extraction separately via the extract endpoint
+    (to be implemented in the LLM extraction job phase).
+    """
+    if file.content_type not in _ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Only PDF files are accepted. Got: {file.content_type}",
+        )
+
+    doc_id = str(uuid.uuid4())
+    s3_key = f"{current_user.firm_id}/{doc_id}/{file.filename or 'document.pdf'}"
+
+    pdf_bytes = await file.read()
+    if not pdf_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty.",
+        )
+
+    try:
+        s3_backend.ensure_bucket_exists(_BUCKET)
+        s3_backend.upload_bytes(_BUCKET, s3_key, pdf_bytes, content_type="application/pdf")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to upload file to storage: {exc}",
+        )
+
+    doc = await rule_repository.create_document(
+        session=session,
+        firm_id=current_user.firm_id,
+        uploaded_by=current_user.user_id,
+        jurisdiction=jurisdiction,
+        code_name=code_name,
+        code_version=code_version,
+        s3_key=s3_key,
+    )
+    # Override the auto-generated doc_id so the s3_key and doc_id are consistent
+    doc.doc_id = doc_id
+    session.add(doc)
+
+    return _doc_to_response(doc)
+
+
+@router.get("/building-codes", response_model=list[BuildingCodeDocumentResponse])
+async def list_building_codes(
+    jurisdiction: Annotated[str | None, Query()] = None,
+    doc_status: Annotated[str | None, Query(alias="status")] = None,
+    current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[BuildingCodeDocumentResponse]:
+    """
+    List building code documents uploaded by this firm.
+
+    Optionally filter by jurisdiction (e.g. "NP-KTM") or status
+    ("uploaded", "extracting", "review", "active", "superseded").
+    """
+    docs = await rule_repository.get_documents(
+        session,
+        firm_id=current_user.firm_id,
+        jurisdiction=jurisdiction,
+        status=doc_status,
+    )
+    return [_doc_to_response(d) for d in docs]
+
+
+@router.get(
+    "/building-codes/{doc_id}/rules",
+    response_model=list[ExtractedRuleResponse],
+)
+async def list_extracted_rules(
+    doc_id: str,
+    approved: Annotated[bool | None, Query(description="Filter: true=approved, false=rejected, omit=all")] = None,
+    current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[ExtractedRuleResponse]:
+    """
+    Return extracted rules for a building code document.
+
+    Use ``approved=null`` (omit) to see the full review queue,
+    ``approved=true`` for approved rules, ``approved=false`` for rejections.
+
+    The document must belong to the current user's firm.
+    """
+    doc = await rule_repository.get_document(session, doc_id, current_user.firm_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    rows = await rule_repository.get_extracted_rules(session, doc_id, approved=approved)
+    return [
+        ExtractedRuleResponse(
+            extracted_rule_id=r.extracted_rule_id,
+            doc_id=r.doc_id,
+            jurisdiction=r.jurisdiction,
+            proposed_rule_id=r.proposed_rule_id,
+            name=r.name,
+            description=r.description,
+            source_section=r.source_section,
+            source_page=r.source_page,
+            source_text=r.source_text,
+            category=r.category,
+            severity=r.severity,
+            numeric_value=r.numeric_value,
+            unit=r.unit,
+            confidence=r.confidence,
+            reviewer_approved=r.reviewer_approved,
+            reviewer_notes=r.reviewer_notes,
+            reviewed_by=r.reviewed_by,
+            reviewed_at=r.reviewed_at,
+        )
+        for r in rows
+    ]
+
+
+@router.put(
+    "/building-codes/{doc_id}/rules/{extracted_rule_id}",
+    response_model=ExtractedRuleResponse,
+)
+async def review_extracted_rule(
+    doc_id: str,
+    extracted_rule_id: str,
+    body: RuleReviewRequest,
+    current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ExtractedRuleResponse:
+    """
+    Approve or reject a single extracted rule.
+
+    Sets reviewer_approved, reviewer_notes, reviewed_by, and reviewed_at.
+    The document must belong to the current user's firm.
+    """
+    doc = await rule_repository.get_document(session, doc_id, current_user.firm_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    updated = await rule_repository.approve_extracted_rule(
+        session=session,
+        extracted_rule_id=extracted_rule_id,
+        doc_id=doc_id,
+        reviewer_id=current_user.user_id,
+        approved=body.approved,
+        notes=body.notes,
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extracted rule not found.")
+
+    return ExtractedRuleResponse(
+        extracted_rule_id=updated.extracted_rule_id,
+        doc_id=updated.doc_id,
+        jurisdiction=updated.jurisdiction,
+        proposed_rule_id=updated.proposed_rule_id,
+        name=updated.name,
+        description=updated.description,
+        source_section=updated.source_section,
+        source_page=updated.source_page,
+        source_text=updated.source_text,
+        category=updated.category,
+        severity=updated.severity,
+        numeric_value=updated.numeric_value,
+        unit=updated.unit,
+        confidence=updated.confidence,
+        reviewer_approved=updated.reviewer_approved,
+        reviewer_notes=updated.reviewer_notes,
+        reviewed_by=updated.reviewed_by,
+        reviewed_at=updated.reviewed_at,
+    )
+
+
+@router.post(
+    "/building-codes/{doc_id}/activate",
+    response_model=ActivateRulesResponse,
+)
+async def activate_building_code(
+    doc_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ActivateRulesResponse:
+    """
+    Promote all reviewer-approved extracted rules to JurisdictionRuleModel.
+
+    Updates the document status to "active" and returns the count of rules
+    that were promoted. Only firm_admins can activate rules (BUILDING_CODES permission).
+
+    After activation, the rules are immediately available via load_rules_from_db()
+    and can be re-indexed into ChromaDB by running:
+        uv run python scripts/index_knowledge.py --jurisdiction <code>
+    """
+    doc = await rule_repository.get_document(session, doc_id, current_user.firm_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    if doc.status == "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document rules have already been activated.",
+        )
+
+    try:
+        count = await rule_repository.activate_approved_rules(
+            session=session,
+            doc_id=doc_id,
+            firm_id=current_user.firm_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+    return ActivateRulesResponse(
+        doc_id=doc_id,
+        rules_activated=count,
+        jurisdiction=doc.jurisdiction,
+        message=(
+            f"Activated {count} rules for {doc.jurisdiction}. "
+            "Re-index ChromaDB to enable semantic search: "
+            f"uv run python scripts/index_knowledge.py --jurisdiction {doc.jurisdiction}"
+        ),
+    )

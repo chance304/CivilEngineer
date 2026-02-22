@@ -93,19 +93,23 @@ def build_index(
         return
 
     ids = [r.rule_id for r in rules]
-    documents = [r.embedding_text for r in rules]
+    # documents holds the text that gets embedded (embedding_text field)
+    documents = [r.embedding_text or r.name for r in rules]
     metadatas = [
         {
+            # Scalar metadata for ChromaDB where-clause filtering
             "jurisdiction": r.jurisdiction,
             "code_version": r.code_version,
             "category": r.category.value,
             "severity": r.severity.value,
             "rule_type": r.rule_type,
             "applies_to": ",".join(r.applies_to),
-            "numeric_value": str(r.numeric_value) if r.numeric_value is not None else "",
+            "numeric_value": r.numeric_value if r.numeric_value is not None else "",
             "unit": r.unit or "",
             "source_section": r.source_section,
             "name": r.name,
+            # Full rule as JSON — enables lossless round-trip in retriever
+            "full_rule_json": r.model_dump_json(),
         }
         for r in rules
     ]

@@ -10,6 +10,7 @@ plan_node — Layer 2 (knowledge retrieval + strategy).
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from langchain_core.messages import AIMessage
 
@@ -75,12 +76,31 @@ def plan_node(state: AgentState) -> dict:
         )
         logger.info(strategy)
 
+        event = {
+            "node": "plan",
+            "type": "zone_computed",
+            "iteration": state.get("revision_count", 0),
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "data": {
+                "zone_width": zone.width,
+                "zone_depth": zone.depth,
+                "setbacks": {
+                    "front": setbacks[0],
+                    "rear": setbacks[1],
+                    "left": setbacks[2],
+                    "right": setbacks[3] if len(setbacks) > 3 else setbacks[2],
+                },
+                "jurisdiction": jurisdiction,
+                "room_count": room_count,
+            },
+        }
         return {
             "buildable_zone": zone_dict,
             "setbacks": list(setbacks),
             "warnings": warnings,
             "errors": errors,
             "messages": [AIMessage(content=strategy)],
+            "decision_events": [event],
         }
 
     except Exception as exc:

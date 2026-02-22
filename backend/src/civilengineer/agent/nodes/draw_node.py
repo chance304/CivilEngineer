@@ -16,6 +16,7 @@ Output files are written to state["output_dir"] / session_id /:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -140,6 +141,20 @@ def draw_node(state: AgentState) -> dict:
             + f"\n\nCost estimate ({grade}): {cost_estimate.formatted_total()}"
         )
 
+        event = {
+            "node": "draw",
+            "type": "cad_generated",
+            "iteration": state.get("revision_count", 0),
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "data": {
+                "dxf_paths": dxf_paths,
+                "pdf_paths": pdf_paths,
+                "num_floors": building.num_floors,
+                "roof_type": getattr(building, "roof_type", ""),
+                "facade_material": grade,
+                "floor_heights": [],
+            },
+        }
         return {
             "dxf_paths":    dxf_paths,
             "pdf_paths":    pdf_paths,
@@ -148,6 +163,7 @@ def draw_node(state: AgentState) -> dict:
             "messages":     [AIMessage(content=summary)],
             "warnings":     warnings,
             "errors":       errors,
+            "decision_events": [event],
         }
 
     except Exception as exc:

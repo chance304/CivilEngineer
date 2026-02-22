@@ -12,6 +12,7 @@ reconstruct typed objects inside nodes.
 
 from __future__ import annotations
 
+import operator
 from typing import Annotated
 
 from langchain_core.messages import BaseMessage
@@ -83,6 +84,11 @@ class AgentState(TypedDict, total=False):
     errors: list[str]
     warnings: list[str]
 
+    # -----------------------------------------------------------------------
+    # Decision event accumulator (appended by each node, persisted at end)
+    # -----------------------------------------------------------------------
+    decision_events: Annotated[list[dict], operator.add]
+
 
 def make_initial_state(project_id: str, session_id: str) -> AgentState:
     """Create a fresh AgentState for a new design run."""
@@ -110,4 +116,5 @@ def make_initial_state(project_id: str, session_id: str) -> AgentState:
         messages=[],
         errors=[],
         warnings=[],
+        decision_events=[],
     )

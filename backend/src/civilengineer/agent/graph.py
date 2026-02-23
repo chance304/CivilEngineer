@@ -26,6 +26,9 @@ Full pipeline:
     ▼ (SAT / PARTIAL)
   geometry         ← SolveResult → FloorPlan + walls
     │
+    ▼
+  mep_routing      ← A* conduit routing + plumbing stacking
+    │
     ▼ (interrupt — engineer reviews floor plan layout)
   human_review
     │
@@ -78,6 +81,7 @@ from civilengineer.agent.nodes.draw_node import draw_node
 from civilengineer.agent.nodes.geometry_node import geometry_node
 from civilengineer.agent.nodes.human_review_node import human_review_node
 from civilengineer.agent.nodes.load_project_node import load_project_node
+from civilengineer.agent.nodes.mep_node import mep_routing_node
 from civilengineer.agent.nodes.plan_node import plan_node
 from civilengineer.agent.nodes.relax_node import relax_node
 from civilengineer.agent.nodes.save_output_node import save_output_node
@@ -262,6 +266,7 @@ def build_graph(checkpointer=None):
     builder.add_node("solve",         solve_node)
     builder.add_node("relax",         relax_node)
     builder.add_node("geometry",      geometry_node)
+    builder.add_node("mep_routing",   mep_routing_node)
     builder.add_node("human_review",  human_review_node)
     builder.add_node("draw",          draw_node)
     builder.add_node("verify",        verify_node)
@@ -274,7 +279,8 @@ def build_graph(checkpointer=None):
     builder.add_edge("load_project", "interview")
     builder.add_edge("interview",    "validate")
     builder.add_edge("plan",         "solve")
-    builder.add_edge("geometry",     "human_review")
+    builder.add_edge("geometry",     "mep_routing")
+    builder.add_edge("mep_routing",  "human_review")
     builder.add_edge("draw",         "verify")
     builder.add_edge("save_output",  END)
 

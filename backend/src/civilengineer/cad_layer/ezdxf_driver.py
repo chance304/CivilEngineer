@@ -34,6 +34,7 @@ from civilengineer.schemas.design import (
     WallFace,
     Window,
 )
+from civilengineer.schemas.mep import ConduitRun, MEPNetwork, PlumbingStack
 
 logger = logging.getLogger(__name__)
 
@@ -577,3 +578,135 @@ class EzdxfDriver:
                 "insert": (560, 14),
             },
         )
+
+    # ------------------------------------------------------------------
+    # MEP drawing methods
+    # ------------------------------------------------------------------
+
+    def _draw_mep_electrical(
+        self, msp: Modelspace, network: MEPNetwork
+    ) -> None:
+        """
+        Draw electrical conduit runs and panel locations.
+
+        Conduit runs are drawn as polylines on E-CONDUIT (dashed cyan).
+        Panel locations are drawn as filled squares on E-PANEL (cyan).
+        """
+        # Draw conduit runs
+        for run in network.conduit_runs:
+            if len(run.path) < 2:
+                continue
+            pts = [(p.x, p.y) for p in run.path]
+            msp.add_lwpolyline(
+                pts,
+                dxfattribs={"layer": LayerManager.MEP_CONDUIT, "ltscale": 0.5},
+            )
+            # Label the circuit at midpoint
+            mid = run.path[len(run.path) // 2]
+            msp.add_text(
+                f"{run.circuit_name} ({run.wire_gauge_mm2:.1f}mm²)",
+                dxfattribs={
+                    "layer": LayerManager.MEP_CONDUIT,
+                    "height": 0.12,
+                    "insert": (mid.x + 0.05, mid.y + 0.05),
+                },
+            )
+
+        # Draw panels as filled squares (0.3 × 0.3 m)
+        for panel in network.panels:
+            px, py = panel.location.x, panel.location.y
+            half = 0.15
+            msp.add_solid(
+                [(px - half, py - half), (px + half, py - half),
+                 (px - half, py + half), (px + half, py + half)],
+                dxfattribs={"layer": LayerManager.MEP_PANEL, "color": 4},
+            )
+            msp.add_text(
+                f"PNL {panel.load_kva:.1f}kVA/{panel.phase}",
+                dxfattribs={
+                    "layer": LayerManager.MEP_PANEL,
+                    "height": 0.15,
+                    "insert": (px + 0.20, py - 0.08),
+                },
+            )
+
+    def _draw_mep_plumbing(
+        self, msp: Modelspace, network: MEPNetwork
+    ) -> None:
+        """
+        Draw plumbing stacks and pipe runs.
+
+        Cold supply → P-SUPPLY (blue), hot supply → P-HW-SUPPLY (red),
+        stack centre → P-STACK (magenta circle).
+        """
+        for stack in network.plumbing_stacks:
+            # Cold supply path
+            if len(stack.cold_pipe_path) >= 2:
+                pts = [(p.x, p.y) for p in stack.cold_pipe_path]
+                msp.add_lwpolyline(
+                    pts,
+                    dxfattribs={"layer": LayerManager.MEP_SUPPLY},
+                )
+
+            # Hot supply path
+            if len(stack.hot_pipe_path) >= 2:
+                # Offset hot path 0.05m for legibility
+                pts = [(p.x + 0.05, p.y + 0.05) for p in stack.hot_pipe_path]
+                msp.add_lwpolyline(
+                    pts,
+                    dxfattribs={"layer": LayerManager.MEP_HW_SUPPLY},
+                )
+
+            # Stack symbol: circle at stack centroid
+            if stack.cold_pipe_path:
+                sp = stack.cold_pipe_path[0]
+                msp.add_circle(
+                    (sp.x, sp.y),
+                    radius=0.10,
+                    dxfattribs={"layer": LayerManager.MEP_STACK},
+                )
+                msp.add_text(
+                    f"STK Ø{stack.pipe_dia_mm:.0f}",
+                    dxfattribs={
+                        "layer": LayerManager.MEP_STACK,
+                        "height": 0.12,
+                        "insert": (sp.x + 0.12, sp.y - 0.06),
+                    },
+                )
+
+    def render_mep_plan(
+        self,
+        floor_plan: FloorPlan,
+        building: BuildingDesign,
+        output_path: Path,
+    ) -> Drawing:
+        """
+        Render a separate MEP DXF sheet for a single floor.
+
+        Includes architectural background (faint), conduit runs,
+        plumbing stacks, and panel locations.
+        """
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = _INSUNITS_METRES
+        doc.header["$MEASUREMENT"] = 1
+
+        lm = LayerManager(doc)
+        lm.setup_layers()
+
+        msp = doc.modelspace()
+
+        # Faint architectural background
+        self._draw_plot_boundary(msp, building)
+        self._draw_rooms(msp, floor_plan)
+
+        # MEP content
+        if floor_plan.mep_network:
+            self._draw_mep_electrical(msp, floor_plan.mep_network)
+            self._draw_mep_plumbing(msp, floor_plan.mep_network)
+
+        # Title block (MEP sheet)
+        self._draw_title_block(msp, building, floor_plan)
+
+        doc.saveas(output_path)
+        logger.info("MEP DXF written: %s", output_path)
+        return doc

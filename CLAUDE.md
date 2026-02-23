@@ -4,13 +4,18 @@
 
 A multi-user web portal for a civil engineering firm. Engineers log in from any
 browser, manage projects, and use an AI pipeline to generate professional building
-drawings (DXF + PDF) compliant with the project's jurisdiction building codes.
+drawings (DXF + PDF + IFC) compliant with the project's jurisdiction building codes.
 
 **Core principle:** The LLM handles qualitative reasoning only. Room areas, setbacks,
-structural spans, and all numeric constraints are enforced deterministically from the
-jurisdiction's compiled rule set. The LLM never makes numeric decisions.
+structural spans, MEP routing, and all numeric constraints are enforced deterministically
+from the jurisdiction's compiled rule set. The LLM never makes numeric decisions.
 
 Full architecture docs: `architecture/` — start with `00-overview.md`.
+
+**Current status (2026-02-23):**
+- Backend: **474/474 unit tests passing** — all 12 layers implemented including MEP engine
+- Frontend: **complete Next.js 14 portal** — 17 pages, 39 TypeScript files
+- Progress log: `discussion/2026-02-23.md`
 
 ---
 
@@ -65,15 +70,16 @@ uv run python scripts/generate_api_types.py  # OpenAPI → frontend/src/types/ap
 
 ---
 
-## Architecture: 12 Layers
+## Architecture: 12 Layers + MEP
 
 ```
 [0]    Project Manager        → firm/user/project CRUD (PostgreSQL)
 [0.5]  Plot Analyzer          → ezdxf reads uploaded DWG → PlotInfo
-[0.75] Requirements Interview → LangGraph subgraph → DesignRequirements (multi-floor)
+[0.75] Requirements Interview → LangGraph subgraph → DesignRequirements (multi-floor + MEP)
 [1]    Input Validator         → cross-check requirements vs PlotInfo + jurisdiction rules
 [2]    Reasoning Engine        → Rule Engine (exact) + ChromaDB (semantic) + OR-Tools (solver)
 [3]    Geometry Engine         → room coordinates, walls, doors, windows (all floors, Shapely)
+[3.25] MEP Router              → A* electrical conduit routing + plumbing stacking (deterministic)
 [3.5]  Elevation Engine        → front/rear/side elevations + 3D building outline (ezdxf)
 [4]    MCP Tool Server         → FastMCP (stdio) — AI calls ezdxf/AutoCAD tools
 [5]    CAD Execution           → ezdxf primary (cloud), AutoCAD COM optional (on-prem, future)
@@ -241,8 +247,12 @@ JWT: access token (15 min, in Authorization header) + refresh token (7 days, htt
 8. **Approval pauses use WebSocket events** — not blocking. The Celery worker polls Redis
    for the engineer's approval response.
 
-9. **Output includes elevations + 3D.** Every completed design session must produce:
-   floor plans (per floor) + elevation DXFs (front/rear/left/right) + building_3d.dxf + PDF set.
+9. **Output includes elevations + 3D + MEP.** Every completed design session must produce:
+   floor plans (per floor) + elevation DXFs (front/rear/left/right) + building_3d.dxf + MEP DXF sheets + PDF set.
+
+10. **MEP routing is deterministic.** Conduit paths (A*), plumbing stacks, and panel sizing
+    are computed algorithmically — never by the LLM. Wire gauges and pipe diameters must
+    trace to a `JurisdictionRuleModel` row or the hardcoded NBC defaults in `mep_router.py`.
 
 ---
 
@@ -251,6 +261,7 @@ JWT: access token (15 min, in Authorization header) + refresh token (7 days, htt
 ```
 backend/src/civilengineer/
   schemas/design.py                Core design schemas (DesignRequirements, FloorPlan, etc.)
+  schemas/mep.py                   MEP schemas (MEPNetwork, ConduitRun, PlumbingStack, etc.)
   schemas/elevation.py             ElevationView, BuildingOutline3D, ElevationSet
   schemas/codes.py                 BuildingCodeDocument, ExtractedRule, RuleExtractionJob
   schemas/auth.py                  User, Firm, FirmSettings (with LLMConfig), Token schemas
@@ -261,29 +272,47 @@ backend/src/civilengineer/
   api/routers/admin.py             LLM config + building code endpoints (firm_admin)
   jobs/design_job.py               Main Celery design pipeline task
   jobs/code_extraction_job.py      PDF → LLM rule extraction Celery task
-  agent/graph.py                   LangGraph graph definition
-  agent/state.py                   AgentState TypedDict (incl. elevation_set, num_floors)
+  agent/graph.py                   LangGraph graph definition (incl. mep_routing_node)
+  agent/state.py                   AgentState TypedDict
+  agent/nodes/mep_node.py          MEP routing node (between geometry + human_review)
   agent/nodes/elevation_node.py    Generates ElevationSet from BuildingDesign
   jurisdiction/registry.py         All supported jurisdiction metadata (Nepal first)
   jurisdiction/loader.py           get_rule_set(jurisdiction, version, overrides)
   reasoning_engine/constraint_solver.py  OR-Tools CP-SAT (multi-floor)
+  reasoning_engine/mep_router.py   A* conduit routing + plumbing stacking
   elevation_engine/                Front/rear/side elevation generator + 3D outline
+  output_layer/ifc_exporter.py     IFC 2x3 BIM export (ifcopenshell, optional)
   code_parser/                     PDF reader + LLM rule extractor + reviewer
-  cad_layer/ezdxf_driver.py        Primary CAD generation (plan + elevation + 3D)
+  cad_layer/ezdxf_driver.py        Primary CAD generation (plan + elevation + 3D + MEP)
+  cad_layer/layer_manager.py       AIA layer definitions (incl. E-CONDUIT, P-SUPPLY, etc.)
   knowledge_base/raw/nepal/        Nepal NBC PDFs (source for extraction)
 
 frontend/src/
+  app/(auth)/login/                Sign-in page
+  app/(auth)/forgot-password/      Password reset request
+  app/(portal)/dashboard/          Project grid + quick actions
+  app/(portal)/projects/new/       3-step project creation wizard
+  app/(portal)/projects/[id]/plot/ Plot DWG/DXF upload + SVG preview
+  app/(portal)/projects/[id]/interview/  WebSocket interview chat
+  app/(portal)/projects/[id]/design/[sessionId]/  Pipeline progress timeline
+  app/(portal)/projects/[id]/design/[sessionId]/review/  Engineer approval
+  app/(portal)/projects/[id]/files/  Output file downloads
   app/(portal)/admin/llm-config/   LLM provider + API key admin page
   app/(portal)/admin/building-codes/ Building code PDF upload + rule review pages
-  components/design/FloorPlanViewer.tsx   SVG floor plan renderer (multi-floor tabs)
+  app/(portal)/admin/users/        User management + invite
+  app/(portal)/settings/           Profile + password change
+  components/design/FloorPlanViewer.tsx   SVG floor plan renderer (multi-floor, zoom+pan)
   components/design/ElevationViewer.tsx   SVG elevation views (front/rear/left/right)
-  components/design/Building3DViewer.tsx  Isometric 3D building outline
-  components/admin/LLMConfigForm.tsx      LLM provider/model/key form
-  components/admin/RuleReviewTable.tsx    Extracted rule review + approve UI
-  components/interview/InterviewChat.tsx  Conversational interview UI
-  lib/api.ts                       Typed API client
-  lib/websocket.ts                 WebSocket for design job progress
-  hooks/useDesignJob.ts            Real-time design job subscription
+  components/design/Building3DViewer.tsx  Isometric 3D building outline with rotation
+  components/admin/LLMConfigForm.tsx      LLM provider/model/key form + test connection
+  components/admin/RuleReviewTable.tsx    Extracted rule review + bulk approve UI
+  components/interview/InterviewChat.tsx  WebSocket conversational interview UI
+  lib/api.ts                       Typed API client (auto JWT refresh on 401)
+  lib/websocket.ts                 Singleton WebSocket manager (auto-reconnect)
+  lib/dxf-renderer.ts              FloorPlan JSON → SVG element data (no DXF parser)
+  hooks/useDesignJob.ts            Real-time design job WebSocket subscription
+  store/useAppStore.ts             Zustand: user, token, jobProgress, approvalRequest
+  types/api.ts                     TypeScript interfaces for all API shapes
 ```
 
 ---

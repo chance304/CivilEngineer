@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from civilengineer.schemas.design import RoomType, StylePreference
+from civilengineer.schemas.mep import MEPRequirements
 
 # ---------------------------------------------------------------------------
 # Question definition
@@ -150,6 +151,56 @@ def extract_special_rooms(text: str) -> list[RoomType]:
 
 
 # ---------------------------------------------------------------------------
+# MEP extractor functions
+# ---------------------------------------------------------------------------
+
+
+def extract_high_load_appliances(text: str) -> list[str]:
+    """Parse high-load appliance mentions from free text."""
+    t = text.lower()
+    appliances: list[str] = []
+    if any(w in t for w in ["ac", "air condition", "air-condition", "split unit"]):
+        appliances.append("AC_MASTER")
+    if any(w in t for w in ["washing machine", "washer", "wm", "laundry"]):
+        appliances.append("WM_UTILITY")
+    if any(w in t for w in ["water heater", "geyser", "hot water", "boiler"]):
+        appliances.append("WATER_HEATER_BATH1")
+    if any(w in t for w in ["oven", "electric oven", "microwave oven"]):
+        appliances.append("OVEN_KITCHEN")
+    if any(w in t for w in ["lift", "elevator"]):
+        appliances.append("ELEVATOR")
+    return appliances
+
+
+def extract_solar_pv_kw(text: str) -> float | None:
+    """Extract solar PV kW target from text. '3kW solar' → 3.0."""
+    m = re.search(r"(\d+(?:\.\d+)?)\s*kw", text, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def extract_plumbing_grade(text: str) -> str:
+    """Return 'basic', 'standard', or 'premium'."""
+    t = text.lower()
+    if any(w in t for w in ["premium", "luxury", "high-end", "upscale"]):
+        return "premium"
+    if any(w in t for w in ["basic", "budget", "simple", "economy"]):
+        return "basic"
+    return "standard"
+
+
+def extract_lighting_preference(text: str) -> str:
+    """Return 'natural-first', 'task', or 'feature'."""
+    t = text.lower()
+    if any(w in t for w in ["feature", "mood", "accent", "decorative"]):
+        return "feature"
+    if any(w in t for w in ["task", "work", "functional"]):
+        return "task"
+    return "natural-first"
+
+
+# ---------------------------------------------------------------------------
 # Question bank
 # ---------------------------------------------------------------------------
 
@@ -236,6 +287,65 @@ QUESTIONS: list[Question] = [
         extractor=lambda t: t.strip(),
         help_text="Say 'none' or describe any constraints.",
     ),
+    # MEP questions
+    Question(
+        id="high_load_appliances",
+        phase="mep",
+        prompt=(
+            "Which high-load electrical appliances will be installed? "
+            "(e.g. air conditioning, washing machine, water heater, electric oven, lift)"
+        ),
+        required=False,
+        extractor=extract_high_load_appliances,
+        help_text="List appliances or say 'none'.",
+    ),
+    Question(
+        id="solar_pv",
+        phase="mep",
+        prompt="Do you want solar PV panels installed? (yes/no)",
+        required=False,
+        extractor=extract_bool,
+        help_text="Yes or no.",
+    ),
+    Question(
+        id="solar_pv_kw",
+        phase="mep",
+        prompt="What solar PV capacity do you need? (e.g. '3kW', '5kW')",
+        required=False,
+        depends_on={"solar_pv": True},
+        extractor=extract_solar_pv_kw,
+        help_text="Specify kW target, e.g. '3kW'.",
+    ),
+    Question(
+        id="solar_water_heating",
+        phase="mep",
+        prompt="Should solar water heating be included?",
+        required=False,
+        extractor=extract_bool,
+        help_text="Yes or no.",
+    ),
+    Question(
+        id="plumbing_grade",
+        phase="mep",
+        prompt=(
+            "What plumbing fixture grade do you prefer? "
+            "(Basic / Standard / Premium)"
+        ),
+        required=False,
+        extractor=extract_plumbing_grade,
+        help_text="Basic = economy fittings, Standard = mid-range, Premium = luxury.",
+    ),
+    Question(
+        id="lighting_preference",
+        phase="mep",
+        prompt=(
+            "What lighting style do you prefer? "
+            "(Natural-first / Task lighting / Feature/mood lighting)"
+        ),
+        required=False,
+        extractor=extract_lighting_preference,
+        help_text="Natural-first maximises daylight; Task = practical; Feature = decorative.",
+    ),
 ]
 
 # Index for quick lookup
@@ -300,6 +410,16 @@ def answers_to_requirements(
     for rtype in special:
         rooms.append({"room_type": rtype.value})
 
+    # MEP requirements
+    mep_req = MEPRequirements(
+        high_load_appliances=answers.get("high_load_appliances", []),
+        solar_pv=answers.get("solar_pv", False),
+        solar_pv_kw=answers.get("solar_pv_kw"),
+        solar_water_heating=answers.get("solar_water_heating", False),
+        plumbing_grade=answers.get("plumbing_grade", "standard"),
+        lighting_preference=answers.get("lighting_preference", "natural-first"),
+    )
+
     return {
         "project_id": project_id,
         "jurisdiction": jurisdiction,
@@ -309,6 +429,7 @@ def answers_to_requirements(
         "vastu_compliant": vastu,
         "road_width_m": road_width_m,
         "notes": notes_text,
+        "mep_requirements": mep_req.model_dump(),
     }
 
 

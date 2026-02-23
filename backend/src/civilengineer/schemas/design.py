@@ -11,6 +11,13 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from civilengineer.schemas.mep import MEPNetwork, MEPRequirements
+
+__all__ = [
+    "MEPNetwork",
+    "MEPRequirements",
+]
+
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
@@ -165,6 +172,7 @@ class FloorPlan(BaseModel):
     rooms: list[RoomLayout] = Field(default_factory=list)
     wall_segments: list[WallSegment] = Field(default_factory=list)
     columns: list[ColumnPosition] = Field(default_factory=list)  # structural columns
+    mep_network: MEPNetwork | None = None  # MEP routing for this floor
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +229,4 @@ class DesignRequirements(BaseModel):
     seismic_zone: str = "V"           # Nepal default
     road_width_m: float | None = None   # Used to compute setbacks in Nepal
     notes: str = ""
+    mep_requirements: MEPRequirements | None = None  # MEP-specific requirements

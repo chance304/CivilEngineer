@@ -21,6 +21,9 @@ engine = create_async_engine(
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
     pool_pre_ping=True,
     echo=settings.DEBUG,
+    # asyncpg: interpret all timestamps as UTC so timezone-aware datetimes
+    # are accepted for TIMESTAMP WITHOUT TIME ZONE columns.
+    connect_args={"server_settings": {"timezone": "UTC"}},
 )
 
 AsyncSessionLocal = async_sessionmaker(

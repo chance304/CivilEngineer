@@ -144,9 +144,13 @@ def main(
         title="CivilEngineer",
     ))
     console.print("\n[bold]Creating tables (if not exist)...[/bold]")
-    asyncio.run(create_tables())
-    console.print("[bold]Seeding data...[/bold]")
-    asyncio.run(_seed(reset=reset))
+
+    async def _run_all() -> None:
+        await create_tables()
+        console.print("[bold]Seeding data...[/bold]")
+        await _seed(reset=reset)
+
+    asyncio.run(_run_all())
 
     console.print(Panel.fit(
         "[bold green]Seed complete![/bold green]\n\n"

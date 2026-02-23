@@ -58,6 +58,13 @@ class LayerManager:
     # 3D outline
     OUTLINE_3D = "A-3D-OUTL"
 
+    # MEP layers (AIA standard E- = electrical, P- = plumbing)
+    MEP_CONDUIT   = "E-CONDUIT"    # electrical conduit runs
+    MEP_PANEL     = "E-PANEL"      # distribution panel / consumer unit
+    MEP_SUPPLY    = "P-SUPPLY"     # cold water supply pipes
+    MEP_HW_SUPPLY = "P-HW-SUPPLY"  # hot water supply pipes
+    MEP_STACK     = "P-STACK"      # vertical plumbing stacks
+
     # Ordered list of all layer definitions
     LAYER_DEFS: list[LayerDef] = [
         # ---- Plan ----
@@ -105,6 +112,18 @@ class LayerManager:
         # ---- 3D ----
         LayerDef(OUTLINE_3D, color=7, lineweight=35,
                  description="3D building wireframe/outline"),
+
+        # ---- MEP ----
+        LayerDef(MEP_CONDUIT, color=4, linetype="DASHED", lineweight=18,
+                 description="Electrical conduit runs (cyan dashed)"),
+        LayerDef(MEP_PANEL, color=4, lineweight=35,
+                 description="Electrical panel / consumer unit location"),
+        LayerDef(MEP_SUPPLY, color=5, lineweight=18,
+                 description="Cold water supply pipes"),
+        LayerDef(MEP_HW_SUPPLY, color=1, lineweight=18,
+                 description="Hot water supply pipes"),
+        LayerDef(MEP_STACK, color=6, lineweight=25,
+                 description="Vertical plumbing stacks (magenta)"),
     ]
 
     # Map name → LayerDef for fast lookup

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from civilengineer.api.middleware.firm_context import FirmContextMiddleware
-from civilengineer.api.routers import admin, auth, design, plots, projects, users, ws
+from civilengineer.api.routers import admin, auth, design, gis, plots, projects, users, ws
 from civilengineer.core.config import get_settings
 
 settings = get_settings()
@@ -54,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(design.router, prefix=prefix)
     app.include_router(users.router, prefix=prefix)
     app.include_router(admin.router, prefix=prefix)
+    app.include_router(gis.router, prefix=prefix)
     app.include_router(ws.router, prefix=prefix)
 
     @app.get("/health", tags=["health"])

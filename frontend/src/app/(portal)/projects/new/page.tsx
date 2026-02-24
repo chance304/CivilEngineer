@@ -6,8 +6,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { projectsApi } from '@/lib/api';
-import { ChevronRight, ChevronLeft, Check } from 'lucide-react';
+import { gisApi, projectsApi } from '@/lib/api';
+import { ChevronRight, ChevronLeft, Check, Locate } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // ---- Step schemas ----
@@ -25,6 +25,8 @@ const step2Schema = z.object({
   road_width_m: z.coerce.number().min(0).optional(),
   num_floors: z.coerce.number().int().min(1).max(10).optional(),
   local_body: z.string().optional(),
+  site_lat: z.coerce.number().min(-90).max(90).optional(),
+  site_lon: z.coerce.number().min(-180).max(180).optional(),
 });
 
 const step3Schema = z.object({
@@ -39,11 +41,17 @@ type Step2 = z.infer<typeof step2Schema>;
 type Step3 = z.infer<typeof step3Schema>;
 
 const JURISDICTIONS = [
-  { value: 'NP-KTM', label: 'Nepal — Kathmandu (NBC 2020)' },
-  { value: 'NP-PKR', label: 'Nepal — Pokhara (NBC 2020)' },
-  { value: 'IN-MH', label: 'India — Maharashtra (NBC 2016)' },
-  { value: 'US-CA', label: 'USA — California (CBC 2022)' },
-  { value: 'UK', label: 'United Kingdom (Building Regs 2023)' },
+  { value: 'NP-KTM',     label: 'Nepal — Kathmandu (NBC 2020)' },
+  { value: 'NP-LAL',     label: 'Nepal — Lalitpur (NBC 2020)' },
+  { value: 'NP-BKT',     label: 'Nepal — Bhaktapur (NBC 2020)' },
+  { value: 'NP-PKR',     label: 'Nepal — Pokhara (NBC 2020)' },
+  { value: 'NP',         label: 'Nepal — Other (NBC 2020)' },
+  { value: 'IN-MH',      label: 'India — Maharashtra (NBC 2016)' },
+  { value: 'IN-MH-PUN',  label: 'India — Pune / PCMC (NBC 2016)' },
+  { value: 'IN-KA',      label: 'India — Karnataka (NBC 2016)' },
+  { value: 'IN',         label: 'India — Other (NBC 2016)' },
+  { value: 'US-CA',      label: 'USA — California (CBC 2022)' },
+  { value: 'UK',         label: 'United Kingdom (Building Regs 2023)' },
 ];
 
 const STEPS = ['Basic Info', 'Jurisdiction', 'Options'];
@@ -53,6 +61,8 @@ export default function NewProjectPage() {
   const [step, setStep] = useState(0);
   const [step1Data, setStep1Data] = useState<Step1 | null>(null);
   const [step2Data, setStep2Data] = useState<Step2 | null>(null);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [detectionResult, setDetectionResult] = useState<string | null>(null);
 
   const form1 = useForm<Step1>({ resolver: zodResolver(step1Schema) });
   const form2 = useForm<Step2>({ resolver: zodResolver(step2Schema) });
@@ -61,6 +71,33 @@ export default function NewProjectPage() {
   async function handleStep1(data: Step1) {
     setStep1Data(data);
     setStep(1);
+  }
+
+  async function handleAutoDetect() {
+    const lat = form2.getValues('site_lat');
+    const lon = form2.getValues('site_lon');
+    if (lat === undefined || lon === undefined || lat === null || lon === null) {
+      toast.error('Enter latitude and longitude first.');
+      return;
+    }
+    setIsDetecting(true);
+    setDetectionResult(null);
+    try {
+      const result = await gisApi.resolveJurisdiction(lat, lon);
+      form2.setValue('jurisdiction', result.jurisdiction);
+      if (result.local_body) {
+        form2.setValue('local_body', result.local_body);
+      }
+      const pct = Math.round(result.confidence * 100);
+      setDetectionResult(
+        `Detected: ${result.jurisdiction}${result.local_body ? ` / ${result.local_body}` : ''} — ${pct}% confidence (${result.match_level})`
+      );
+      toast.success('Jurisdiction auto-detected!');
+    } catch {
+      toast.error('Could not detect jurisdiction. Check your coordinates and try again.');
+    } finally {
+      setIsDetecting(false);
+    }
   }
 
   async function handleStep2(data: Step2) {
@@ -82,6 +119,8 @@ export default function NewProjectPage() {
           road_width_m: step2Data.road_width_m,
           num_floors: step2Data.num_floors ?? 2,
           local_body: step2Data.local_body,
+          site_lat: step2Data.site_lat,
+          site_lon: step2Data.site_lon,
           dimension_units: data.dimension_units,
           style: data.style,
           vastu_compliant: data.vastu_compliant,
@@ -150,6 +189,46 @@ export default function NewProjectPage() {
         {step === 1 && (
           <form onSubmit={form2.handleSubmit(handleStep2)} className="space-y-4">
             <h2 className="font-semibold text-gray-900 mb-4">Jurisdiction & Site</h2>
+
+            {/* GPS auto-detect block */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-3">
+              <p className="text-xs font-medium text-gray-600">
+                Auto-detect jurisdiction from GPS coordinates (optional)
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Latitude" error={form2.formState.errors.site_lat?.message}>
+                  <input
+                    {...form2.register('site_lat')}
+                    type="number"
+                    step="any"
+                    placeholder="27.7172"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Longitude" error={form2.formState.errors.site_lon?.message}>
+                  <input
+                    {...form2.register('site_lon')}
+                    type="number"
+                    step="any"
+                    placeholder="85.3240"
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+              <button
+                type="button"
+                onClick={handleAutoDetect}
+                disabled={isDetecting}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 disabled:opacity-50"
+              >
+                <Locate className="w-3.5 h-3.5" />
+                {isDetecting ? 'Detecting…' : 'Auto-detect jurisdiction'}
+              </button>
+              {detectionResult && (
+                <p className="text-xs text-green-700 font-medium">{detectionResult}</p>
+              )}
+            </div>
+
             <Field label="Jurisdiction *" error={form2.formState.errors.jurisdiction?.message}>
               <select {...form2.register('jurisdiction')} className={inputClass} defaultValue="NP-KTM">
                 {JURISDICTIONS.map((j) => (

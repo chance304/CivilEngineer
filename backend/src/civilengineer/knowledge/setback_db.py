@@ -22,6 +22,11 @@ Supported cities:
   NP-LAL   Lalitpur  (LMCB 2076)
   NP-BKT   Bhaktapur (BMCB 2076)
   NP       Generic Nepal (NBC 2020 defaults)
+
+  IN-MH    Mumbai / Maharashtra (DCPR 2034)
+  IN-MH-PUN Pune (PMC Development Plan 2007)
+  IN-KA    Bangalore / Karnataka (BDA Master Plan 2031)
+  IN       Generic India (NBC 2016 defaults)
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _road_category(road_width_m: float | None) -> str:
-    """Classify road width into a named category."""
+    """Classify road width using Nepal/default breakpoints (KMC Bylaw 2076)."""
     if road_width_m is None:
         return "unknown"
     if road_width_m < 6.0:
@@ -49,6 +54,28 @@ def _road_category(road_width_m: float | None) -> str:
     if road_width_m < 20.0:
         return "arterial"     # 11–20 m
     return "highway"          # ≥ 20 m
+
+
+def _road_category_india(road_width_m: float | None) -> str:
+    """Classify road width using Indian jurisdiction breakpoints (DCPR 2034 / BDA / NBC 2016)."""
+    if road_width_m is None:
+        return "unknown"
+    if road_width_m < 9.0:
+        return "narrow"       # < 9 m
+    if road_width_m < 12.0:
+        return "local"        # 9–12 m
+    if road_width_m < 18.0:
+        return "collector"    # 12–18 m
+    if road_width_m < 30.0:
+        return "arterial"     # 18–30 m
+    return "highway"          # ≥ 30 m
+
+
+def _road_category_for_code(road_width_m: float | None, city_code: str) -> str:
+    """Select road category using jurisdiction-appropriate breakpoints."""
+    if city_code[:2].upper() == "IN":
+        return _road_category_india(road_width_m)
+    return _road_category(road_width_m)
 
 
 # ---------------------------------------------------------------------------
@@ -116,30 +143,105 @@ _SETBACK_TABLE: dict[str, dict[str, SetbackRecord]] = {
         "highway":   SetbackRecord(6.0, 3.0, 2.0, 2.0, "NBC 205:2020 §8.1"),
         "unknown":   SetbackRecord(1.5, 1.5, 1.0, 1.0, "NBC 205:2020 default"),
     },
+
+    # ------- Mumbai / Maharashtra (DCPR 2034) -------
+    # Road-width thresholds per DCPR 2034 Regulation 23
+    "IN-MH": {
+        "narrow":    SetbackRecord(3.0, 3.0, 1.5, 1.5, "DCPR 2034 Reg 23 — road <9m"),
+        "local":     SetbackRecord(4.5, 3.0, 1.5, 1.5, "DCPR 2034 Reg 23 — road 9–12m"),
+        "collector": SetbackRecord(6.0, 3.0, 3.0, 3.0, "DCPR 2034 Reg 23 — road 12–18m"),
+        "arterial":  SetbackRecord(9.0, 4.5, 4.5, 4.5, "DCPR 2034 Reg 23 — road 18–30m"),
+        "highway":   SetbackRecord(12.0, 6.0, 6.0, 6.0, "DCPR 2034 Reg 23 — road >30m"),
+        "unknown":   SetbackRecord(3.0, 3.0, 1.5, 1.5, "DCPR 2034 default"),
+    },
+
+    # ------- Pune (PMC Development Plan 2007, revised 2017) -------
+    "IN-MH-PUN": {
+        "narrow":    SetbackRecord(3.0, 1.5, 1.5, 1.5, "PMC DP 2007 §6.3 — road <9m"),
+        "local":     SetbackRecord(4.5, 3.0, 1.5, 1.5, "PMC DP 2007 §6.3 — road 9–12m"),
+        "collector": SetbackRecord(6.0, 3.0, 3.0, 3.0, "PMC DP 2007 §6.3 — road 12–18m"),
+        "arterial":  SetbackRecord(9.0, 4.5, 4.5, 4.5, "PMC DP 2007 §6.3 — road 18–30m"),
+        "highway":   SetbackRecord(12.0, 6.0, 6.0, 6.0, "NBC 2016 Part 6 §1.2"),
+        "unknown":   SetbackRecord(3.0, 1.5, 1.5, 1.5, "PMC DP 2007 default"),
+    },
+
+    # ------- Bangalore / Karnataka (BDA Master Plan 2031) -------
+    "IN-KA": {
+        "narrow":    SetbackRecord(2.0, 2.0, 1.2, 1.2, "BDA MP 2031 §8.4 — road <9m"),
+        "local":     SetbackRecord(3.0, 2.0, 1.5, 1.5, "BDA MP 2031 §8.4 — road 9–12m"),
+        "collector": SetbackRecord(4.5, 3.0, 2.25, 2.25, "BDA MP 2031 §8.4 — road 12–18m"),
+        "arterial":  SetbackRecord(6.0, 3.0, 3.0, 3.0, "BDA MP 2031 §8.4 — road 18–30m"),
+        "highway":   SetbackRecord(9.0, 4.5, 4.5, 4.5, "BDA MP 2031 §8.4 — road >30m"),
+        "unknown":   SetbackRecord(2.0, 2.0, 1.2, 1.2, "BDA MP 2031 default"),
+    },
+
+    # ------- Generic India (NBC 2016 Part 6 defaults) -------
+    "IN": {
+        "narrow":    SetbackRecord(2.5, 2.5, 1.5, 1.5, "NBC 2016 Part 6 §1.2 — narrow"),
+        "local":     SetbackRecord(3.0, 3.0, 1.5, 1.5, "NBC 2016 Part 6 §1.2 — local"),
+        "collector": SetbackRecord(4.5, 3.0, 2.25, 2.25, "NBC 2016 Part 6 §1.2 — collector"),
+        "arterial":  SetbackRecord(6.0, 4.5, 3.0, 3.0, "NBC 2016 Part 6 §1.2 — arterial"),
+        "highway":   SetbackRecord(9.0, 6.0, 4.5, 4.5, "NBC 2016 Part 6 §1.2 — highway"),
+        "unknown":   SetbackRecord(2.5, 2.5, 1.5, 1.5, "NBC 2016 default"),
+    },
 }
 
 # City name aliases → canonical code
 _CITY_ALIASES: dict[str, str] = {
-    "kathmandu": "NP-KTM",
-    "ktm":       "NP-KTM",
-    "np-ktm":    "NP-KTM",
-    "pokhara":   "NP-PKR",
-    "pkr":       "NP-PKR",
-    "np-pkr":    "NP-PKR",
-    "lalitpur":  "NP-LAL",
-    "patan":     "NP-LAL",
-    "np-lal":    "NP-LAL",
-    "bhaktapur": "NP-BKT",
-    "bkt":       "NP-BKT",
-    "np-bkt":    "NP-BKT",
-    "nepal":     "NP",
-    "np":        "NP",
+    # Nepal
+    "kathmandu":      "NP-KTM",
+    "ktm":            "NP-KTM",
+    "np-ktm":         "NP-KTM",
+    "pokhara":        "NP-PKR",
+    "pkr":            "NP-PKR",
+    "np-pkr":         "NP-PKR",
+    "lalitpur":       "NP-LAL",
+    "patan":          "NP-LAL",
+    "np-lal":         "NP-LAL",
+    "bhaktapur":      "NP-BKT",
+    "bkt":            "NP-BKT",
+    "np-bkt":         "NP-BKT",
+    "nepal":          "NP",
+    "np":             "NP",
+    # India — Maharashtra / Mumbai
+    "mumbai":         "IN-MH",
+    "maharashtra":    "IN-MH",
+    "in-mh":          "IN-MH",
+    "greater mumbai": "IN-MH",
+    "navi mumbai":    "IN-MH",
+    "thane":          "IN-MH",
+    # India — Pune
+    "pune":           "IN-MH-PUN",
+    "in-mh-pun":      "IN-MH-PUN",
+    "pimpri":         "IN-MH-PUN",
+    # India — Karnataka / Bangalore
+    "bangalore":      "IN-KA",
+    "bengaluru":      "IN-KA",
+    "in-ka":          "IN-KA",
+    "mysore":         "IN-KA",
+    "mysuru":         "IN-KA",
+    # Generic India
+    "india":          "IN",
+    "in":             "IN",
 }
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _guess_fallback_table(code: str) -> dict[str, SetbackRecord]:
+    """
+    Pick the best generic fallback for an unrecognised city code.
+
+    Uses the two-letter country prefix to select a country-level default.
+    Falls back to Nepal (NP) for unrecognised prefixes.
+    """
+    prefix = code[:2].upper()
+    if prefix == "IN":
+        return _SETBACK_TABLE["IN"]
+    return _SETBACK_TABLE["NP"]
 
 
 class SetbackDB:
@@ -173,9 +275,9 @@ class SetbackDB:
         """
         # Sync callers (and callers without a session) use the hardcoded table.
         # Async DB lookup is exposed via get_setbacks_async().
-        code = _CITY_ALIASES.get(city.lower(), "NP")
-        city_table = _SETBACK_TABLE.get(code) or _SETBACK_TABLE["NP"]
-        category = _road_category(road_width_m)
+        code = _CITY_ALIASES.get(city.lower(), city.upper())
+        city_table = _SETBACK_TABLE.get(code) or _guess_fallback_table(code)
+        category = _road_category_for_code(road_width_m, code)
         record = city_table.get(category) or city_table.get("unknown")
 
         if record is None:
@@ -236,8 +338,8 @@ class SetbackDB:
         except ImportError:
             return None
 
-        code = _CITY_ALIASES.get(city.lower(), "NP")
-        category = _road_category(road_width_m)
+        code = _CITY_ALIASES.get(city.lower(), city.upper())
+        category = _road_category_for_code(road_width_m, code)
 
         try:
             rules = await get_active_rules(session, jurisdiction=code)  # type: ignore[arg-type]
@@ -278,9 +380,9 @@ class SetbackDB:
         road_width_m: float | None = None,
     ) -> SetbackRecord:
         """Return the full SetbackRecord including citation."""
-        code = _CITY_ALIASES.get(city.lower(), "NP")
-        city_table = _SETBACK_TABLE.get(code) or _SETBACK_TABLE["NP"]
-        category = _road_category(road_width_m)
+        code = _CITY_ALIASES.get(city.lower(), city.upper())
+        city_table = _SETBACK_TABLE.get(code) or _guess_fallback_table(code)
+        category = _road_category_for_code(road_width_m, code)
         return city_table.get(category) or city_table["unknown"]
 
     def supported_cities(self) -> list[str]:

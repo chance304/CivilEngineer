@@ -68,6 +68,10 @@ class ProjectProperties(BaseModel):
     # Firm rule overrides (if firm.settings.custom_rules_enabled)
     rule_overrides: dict[str, Any] = Field(default_factory=dict)
 
+    # GPS coordinates (WGS84) — populated when engineer uses auto-detect
+    site_lat: float | None = None
+    site_lon: float | None = None
+
     municipal_approval_notes: str = ""
     engineer_notes: str = ""
 
@@ -125,6 +129,8 @@ class ProjectCreate(BaseModel):
     jurisdiction: str = Field(default="NP-KTM")
     num_floors: int = Field(default=2, ge=1, le=10)
     road_width_m: float | None = Field(default=None, ge=1.0, le=50.0)
+    site_lat: float | None = Field(default=None, ge=-90.0, le=90.0)
+    site_lon: float | None = Field(default=None, ge=-180.0, le=180.0)
 
 
 class ProjectUpdate(BaseModel):

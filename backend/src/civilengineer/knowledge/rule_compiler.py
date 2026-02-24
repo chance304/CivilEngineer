@@ -22,8 +22,30 @@ from civilengineer.schemas.rules import DesignRule, RuleSet
 
 logger = logging.getLogger(__name__)
 
-# Default bundled data file
+# Default bundled data file (Nepal)
 _DEFAULT_RULES_PATH = Path(__file__).parent / "data" / "rules.json"
+
+# Per-jurisdiction seed files — keyed by jurisdiction prefix (first two chars)
+_JURISDICTION_FILES: dict[str, Path] = {
+    "NP": _DEFAULT_RULES_PATH,
+    "IN": Path(__file__).parent / "data" / "rules_india.json",
+}
+
+
+def _rules_path_for_jurisdiction(jurisdiction: str | None) -> Path:
+    """
+    Return the best bundled JSON file for a given jurisdiction code.
+
+    Uses the two-letter country prefix to find a jurisdiction-specific file.
+    Falls back to rules.json (Nepal) if no specialised file exists.
+    """
+    if jurisdiction:
+        prefix = jurisdiction[:2].upper()
+        if prefix in _JURISDICTION_FILES:
+            candidate = _JURISDICTION_FILES[prefix]
+            if candidate.exists():
+                return candidate
+    return _DEFAULT_RULES_PATH
 
 
 def _auto_embedding_text(rule: DesignRule) -> str:
@@ -56,7 +78,7 @@ def load_rules(
         FileNotFoundError  : if the file does not exist
         ValueError         : if any rule fails Pydantic validation
     """
-    source = path or _DEFAULT_RULES_PATH
+    source = path or _rules_path_for_jurisdiction(jurisdiction)
 
     if not source.exists():
         raise FileNotFoundError(f"Rules file not found: {source}")

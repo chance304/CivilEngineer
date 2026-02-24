@@ -247,6 +247,8 @@ class StylePreference(StrEnum):
     MINIMAL = "minimal"
     NEWARI = "newari"
     CLASSICAL = "classical"
+    CONTEMPORARY = "contemporary"   # Indian contemporary / Indo-modern
+    SOUTH_INDIAN = "south_indian"   # South Indian vernacular (Kerala/Tamil Nadu)
 
 
 class DesignRequirements(BaseModel):

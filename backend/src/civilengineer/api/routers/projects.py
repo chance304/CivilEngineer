@@ -127,6 +127,10 @@ async def create_project(
     }
     if body.road_width_m is not None:
         properties["road_width_m"] = body.road_width_m
+    if body.site_lat is not None:
+        properties["site_lat"] = body.site_lat
+    if body.site_lon is not None:
+        properties["site_lon"] = body.site_lon
 
     row = ProjectModel(
         project_id=project_id,

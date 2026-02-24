@@ -256,6 +256,103 @@ def extract_wall_paint(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# India-specific extractor functions
+# ---------------------------------------------------------------------------
+
+
+def extract_fsi_zone(text: str) -> str:
+    """
+    Parse FSI / FAR zone from free text (Maharashtra DCPR 2034 / NBC 2016).
+
+    Returns one of: 'R1', 'R2', 'C1', 'C2', 'mixed', 'unknown'.
+    - R1 = low-density residential (FSI 1.0)
+    - R2 = medium-density residential (FSI 1.5–2.5)
+    - C1 = neighbourhood commercial
+    - C2 = major commercial
+    """
+    t = text.upper()
+    if any(w in t for w in ["R1", "RESIDENTIAL 1", "LOW DENSITY"]):
+        return "R1"
+    if any(w in t for w in ["R2", "RESIDENTIAL 2", "MEDIUM DENSITY"]):
+        return "R2"
+    if any(w in t for w in ["C2", "COMMERCIAL 2", "MAJOR COMMERCIAL", "HIGH COMMERCIAL"]):
+        return "C2"
+    if any(w in t for w in ["C1", "COMMERCIAL 1", "NEIGHBOURHOOD COMMERCIAL", "LOCAL COMMERCIAL"]):
+        return "C1"
+    if any(w in t for w in ["MIXED", "MIX USE", "MIXED USE"]):
+        return "mixed"
+    return "unknown"
+
+
+def extract_unit_preference(text: str) -> str:
+    """
+    Parse preferred measurement unit from free text.
+
+    Returns 'sqft' or 'sqm'.
+    India commonly uses sq ft for residential; sq m for official plans.
+    """
+    t = text.lower()
+    if any(w in t for w in ["sq ft", "sqft", "square feet", "square foot", "feet"]):
+        return "sqft"
+    return "sqm"
+
+
+def extract_basement_parking(text: str) -> dict[str, object]:
+    """
+    Parse basement parking requirement from free text.
+
+    Returns dict: {'required': bool, 'car_count': int}.
+    Examples:
+      'yes, 2 cars' → {'required': True, 'car_count': 2}
+      'no basement' → {'required': False, 'car_count': 0}
+    """
+    t = text.lower()
+    if any(w in t for w in ["no ", "not ", "don't ", "dont ", "none", "no basement"]):
+        return {"required": False, "car_count": 0}
+
+    m = re.search(r"(\d+)\s*(?:car|vehicle|parking\s*space)", t)
+    car_count = int(m.group(1)) if m else 1
+
+    has_basement = any(w in t for w in [
+        "yes", "basement", "underground", "covered parking", "stilt", "podium"
+    ])
+    return {"required": has_basement or car_count > 0, "car_count": car_count}
+
+
+def extract_rera_applicable(text: str) -> bool:
+    """Return True if RERA compliance is explicitly required."""
+    t = text.lower()
+    if re.search(r"\bno\b", t) or any(w in t for w in ["not applicable", "n/a", "doesn't apply"]):
+        return False
+    if re.search(r"\bnot\b", t):
+        return False
+    if any(w in t for w in ["yes", "rera", "required", "applicable", "mandatory"]):
+        return True
+    # Default: RERA applies to all residential projects >500 sqm in India (2016 Act)
+    return True
+
+
+def extract_india_style(text: str) -> str:
+    """
+    Parse Indian architectural style from free text.
+
+    Returns a StylePreference value string.
+    """
+    t = text.lower()
+    if any(w in t for w in ["south indian", "kerala", "chettinad", "dravidian", "tamil"]):
+        return "south_indian"
+    if any(w in t for w in ["contemporary", "indo-modern", "fusion", "semi-modern"]):
+        return "contemporary"
+    if any(w in t for w in ["newari", "nepali traditional"]):
+        return "newari"
+    if any(w in t for w in ["traditional", "classic", "vernacular", "mughal", "rajasthani"]):
+        return "traditional"
+    if any(w in t for w in ["minimal", "minimalist", "simple", "clean"]):
+        return "minimal"
+    return "modern"
+
+
+# ---------------------------------------------------------------------------
 # Question bank
 # ---------------------------------------------------------------------------
 
@@ -448,6 +545,55 @@ QUESTIONS: list[Question] = [
         required=False,
         extractor=extract_wall_paint,
         help_text="Standard = economy emulsion; Premium = branded washable paint; Texture = 3D/stucco effect.",
+    ),
+    # India-specific questions (shown when jurisdiction starts with "IN")
+    Question(
+        id="india_fsi_zone",
+        phase="india_specific",
+        prompt=(
+            "What is the FSI/FAR zone for this plot? "
+            "(e.g. R1 — low-density residential, R2 — medium-density, "
+            "C1/C2 — commercial, Mixed use)"
+        ),
+        required=False,
+        extractor=extract_fsi_zone,
+        help_text="R1 = FSI 1.0; R2 = FSI 1.5–2.5; C1/C2 = commercial. "
+                  "Check DCPR 2034 (Mumbai), BDA (Bangalore), or local DP.",
+    ),
+    Question(
+        id="india_unit_preference",
+        phase="india_specific",
+        prompt="Do you prefer measurements shown in sq ft or sq m?",
+        required=False,
+        extractor=extract_unit_preference,
+        help_text="Sq ft is common for Indian residential projects; sq m is used in official plans.",
+    ),
+    Question(
+        id="india_basement_parking",
+        phase="india_specific",
+        prompt="Do you need basement or stilt parking? If yes, for how many cars?",
+        required=False,
+        extractor=extract_basement_parking,
+        help_text="Examples: 'Yes, 2 cars', 'Stilt parking for 1 car', 'No basement'.",
+    ),
+    Question(
+        id="india_rera_applicable",
+        phase="india_specific",
+        prompt=(
+            "Is RERA (Real Estate Regulation and Development Act) compliance required? "
+            "Projects >500 sqm built-up area or >8 units require RERA registration."
+        ),
+        required=False,
+        extractor=extract_rera_applicable,
+        help_text="Yes = RERA applies; No = project is below threshold.",
+    ),
+    Question(
+        id="india_sunken_slab",
+        phase="india_specific",
+        prompt="Should bathrooms have a sunken slab for concealed plumbing? (Common in India)",
+        required=False,
+        extractor=extract_bool,
+        help_text="Sunken slab lowers the bathroom floor to hide plumbing pipes.",
     ),
 ]
 

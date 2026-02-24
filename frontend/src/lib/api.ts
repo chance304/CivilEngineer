@@ -276,4 +276,20 @@ export const adminApi = {
   },
 };
 
+// GIS — public endpoint, no auth required
+export const gisApi = {
+  resolveJurisdiction: (lat: number, lon: number) =>
+    apiFetch<{
+      jurisdiction: string;
+      jurisdiction_version: string;
+      local_body: string | null;
+      city: string | null;
+      state: string | null;
+      country: string | null;
+      country_code: string | null;
+      confidence: number;
+      match_level: string;
+    }>(`/gis/resolve-jurisdiction?lat=${lat}&lon=${lon}`),
+};
+
 export { ApiError };

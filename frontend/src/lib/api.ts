@@ -255,6 +255,11 @@ export const adminApi = {
     apiFetch<unknown>(`/admin/building-codes/${docId}/rules/${ruleId}/reject`, {
       method: 'POST',
     }),
+  extractRules: (docId: string) =>
+    apiFetch<{ doc_id: string; celery_task_id: string; message: string }>(
+      `/admin/building-codes/${docId}/extract`,
+      { method: 'POST' }
+    ),
   activateRules: (docId: string) =>
     apiFetch<unknown>(`/admin/building-codes/${docId}/activate`, {
       method: 'POST',

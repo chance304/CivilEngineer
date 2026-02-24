@@ -13,7 +13,7 @@ from the jurisdiction's compiled rule set. The LLM never makes numeric decisions
 Full architecture docs: `architecture/` — start with `00-overview.md`.
 
 **Current status (2026-02-24):**
-- Backend: **569/569 unit tests passing** — all 12 layers + flooring/finishes, cost estimator, ZIP download, finalized status, client approval
+- Backend: **603/603 unit tests passing** — all 12 layers + flooring/finishes, cost estimator, ZIP download, finalized status, client approval, two-agent PDF rule verification
 - Frontend: **complete Next.js 14 portal** — 18 pages, 40+ TypeScript files
 - Progress log: `progress/2026-02-24.md`
 

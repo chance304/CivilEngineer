@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
-import { Check, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Check, X, ChevronDown, ChevronUp, ShieldCheck, AlertTriangle, HelpCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ExtractedRule } from '@/types/api';
 
@@ -13,6 +13,31 @@ const STATUS_STYLES: Record<string, string> = {
   approved: 'bg-green-100 text-green-700',
   rejected: 'bg-red-100 text-red-600',
 };
+
+function VerificationBadge({ status, notes }: { status?: string; notes?: string }) {
+  if (!status || status === 'pending') {
+    return <span className="text-xs text-gray-400">—</span>;
+  }
+  if (status === 'verified') {
+    return (
+      <span className="flex items-center gap-1 text-xs text-green-700">
+        <ShieldCheck className="w-3 h-3" /> verified
+      </span>
+    );
+  }
+  if (status === 'flagged') {
+    return (
+      <span className="flex items-center gap-1 text-xs text-red-600" title={notes ?? ''}>
+        <AlertTriangle className="w-3 h-3" /> flagged
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1 text-xs text-gray-500" title={notes ?? ''}>
+      <HelpCircle className="w-3 h-3" /> unverifiable
+    </span>
+  );
+}
 
 const CONFIDENCE_COLOR = (c: number) =>
   c >= 0.9 ? 'text-green-600' : c >= 0.7 ? 'text-yellow-600' : 'text-red-500';
@@ -96,6 +121,7 @@ export function RuleReviewTable({ docId }: RuleReviewTableProps) {
                   {col} <SortIcon col={col} />
                 </th>
               ))}
+              <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-600">AI check</th>
               <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-600">Actions</th>
             </tr>
           </thead>
@@ -120,6 +146,12 @@ export function RuleReviewTable({ docId }: RuleReviewTableProps) {
                   <span className={cn('text-xs px-1.5 py-0.5 rounded-full font-medium', STATUS_STYLES[rule.status] ?? '')}>
                     {rule.status}
                   </span>
+                </td>
+                <td className="px-3 py-2">
+                  <VerificationBadge
+                    status={(rule as unknown as { verification_status?: string }).verification_status}
+                    notes={(rule as unknown as { verification_notes?: string }).verification_notes}
+                  />
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-1">

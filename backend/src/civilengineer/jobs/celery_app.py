@@ -17,7 +17,11 @@ def create_celery_app() -> Celery:
         "civilengineer",
         broker=settings.REDIS_URL,
         backend=settings.REDIS_URL,
-        include=["civilengineer.jobs.plot_job", "civilengineer.jobs.design_job"],
+        include=[
+            "civilengineer.jobs.plot_job",
+            "civilengineer.jobs.design_job",
+            "civilengineer.jobs.code_extraction_job",
+        ],
     )
     app.conf.update(
         task_serializer="json",

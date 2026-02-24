@@ -40,6 +40,7 @@ from civilengineer.schemas.auth import (
 from civilengineer.schemas.building_codes import (
     ActivateRulesResponse,
     BuildingCodeDocumentResponse,
+    ExtractionJobStarted,
     ExtractedRuleResponse,
     RuleReviewRequest,
 )
@@ -213,6 +214,32 @@ _BUCKET = "building-codes"
 _ALLOWED_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
 
 
+def _extracted_rule_to_response(r: object) -> ExtractedRuleResponse:
+    return ExtractedRuleResponse(
+        extracted_rule_id=r.extracted_rule_id,
+        doc_id=r.doc_id,
+        jurisdiction=r.jurisdiction,
+        proposed_rule_id=r.proposed_rule_id,
+        name=r.name,
+        description=r.description,
+        source_section=r.source_section,
+        source_page=r.source_page,
+        source_text=r.source_text,
+        category=r.category,
+        severity=r.severity,
+        numeric_value=r.numeric_value,
+        unit=r.unit,
+        confidence=r.confidence,
+        reviewer_approved=r.reviewer_approved,
+        reviewer_notes=r.reviewer_notes,
+        reviewed_by=r.reviewed_by,
+        reviewed_at=r.reviewed_at,
+        verification_status=getattr(r, "verification_status", "pending"),
+        verification_notes=getattr(r, "verification_notes", ""),
+        verification_confidence=getattr(r, "verification_confidence", None),
+    )
+
+
 def _doc_to_response(doc: BuildingCodeDocumentModel) -> BuildingCodeDocumentResponse:
     return BuildingCodeDocumentResponse(
         doc_id=doc.doc_id,
@@ -336,29 +363,7 @@ async def list_extracted_rules(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
     rows = await rule_repository.get_extracted_rules(session, doc_id, approved=approved)
-    return [
-        ExtractedRuleResponse(
-            extracted_rule_id=r.extracted_rule_id,
-            doc_id=r.doc_id,
-            jurisdiction=r.jurisdiction,
-            proposed_rule_id=r.proposed_rule_id,
-            name=r.name,
-            description=r.description,
-            source_section=r.source_section,
-            source_page=r.source_page,
-            source_text=r.source_text,
-            category=r.category,
-            severity=r.severity,
-            numeric_value=r.numeric_value,
-            unit=r.unit,
-            confidence=r.confidence,
-            reviewer_approved=r.reviewer_approved,
-            reviewer_notes=r.reviewer_notes,
-            reviewed_by=r.reviewed_by,
-            reviewed_at=r.reviewed_at,
-        )
-        for r in rows
-    ]
+    return [_extracted_rule_to_response(r) for r in rows]
 
 
 @router.put(
@@ -393,25 +398,61 @@ async def review_extracted_rule(
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Extracted rule not found.")
 
-    return ExtractedRuleResponse(
-        extracted_rule_id=updated.extracted_rule_id,
-        doc_id=updated.doc_id,
-        jurisdiction=updated.jurisdiction,
-        proposed_rule_id=updated.proposed_rule_id,
-        name=updated.name,
-        description=updated.description,
-        source_section=updated.source_section,
-        source_page=updated.source_page,
-        source_text=updated.source_text,
-        category=updated.category,
-        severity=updated.severity,
-        numeric_value=updated.numeric_value,
-        unit=updated.unit,
-        confidence=updated.confidence,
-        reviewer_approved=updated.reviewer_approved,
-        reviewer_notes=updated.reviewer_notes,
-        reviewed_by=updated.reviewed_by,
-        reviewed_at=updated.reviewed_at,
+    return _extracted_rule_to_response(updated)
+
+
+@router.post(
+    "/building-codes/{doc_id}/extract",
+    response_model=ExtractionJobStarted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def trigger_rule_extraction(
+    doc_id: str,
+    current_user: Annotated[User, Depends(require_permission(Permission.BUILDING_CODES))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ExtractionJobStarted:
+    """
+    Queue a Celery job to extract and verify rules from an uploaded building code PDF.
+
+    The job runs two LLM passes:
+      1. Extractor — reads PDF pages in batches and identifies quantitative rules.
+      2. Verifier  — cross-checks each extracted rule against its source text.
+
+    Document status transitions: uploaded → extracting → review.
+    Rules appear in the review queue once the job completes.
+    """
+    doc = await rule_repository.get_document(session, doc_id, current_user.firm_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    if doc.status not in ("uploaded", "review"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Document is currently '{doc.status}'. "
+                "Only 'uploaded' or 'review' documents can be re-extracted."
+            ),
+        )
+
+    from civilengineer.jobs.code_extraction_job import extract_and_verify_rules  # noqa: PLC0415
+
+    task = extract_and_verify_rules.delay(
+        doc_id=doc_id,
+        firm_id=current_user.firm_id,
+        user_id=current_user.user_id,
+    )
+
+    # Store the Celery task ID on the document for status tracking
+    doc.extraction_job_id = task.id
+    session.add(doc)
+
+    return ExtractionJobStarted(
+        doc_id=doc_id,
+        celery_task_id=task.id,
+        message=(
+            "Rule extraction job queued. "
+            "Poll GET /building-codes to check when status changes to 'review'."
+        ),
     )
 
 

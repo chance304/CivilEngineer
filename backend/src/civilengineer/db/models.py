@@ -187,6 +187,11 @@ class ExtractedRuleModel(SQLModel, table=True):
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
 
+    # Verification Agent output (second LLM pass)
+    verification_status: str = "pending"    # "pending" | "verified" | "flagged" | "unverifiable"
+    verification_notes: str = ""            # verifier's feedback; non-empty when flagged
+    verification_confidence: float | None = None  # verifier-adjusted confidence score
+
     __table_args__ = (
         sa.Index("ix_extracted_rules_doc_review", "doc_id", "reviewer_approved"),
     )

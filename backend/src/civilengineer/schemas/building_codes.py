@@ -57,6 +57,10 @@ class ExtractedRuleResponse(BaseModel):
     reviewer_notes: str | None
     reviewed_by: str | None
     reviewed_at: datetime | None
+    # Verification agent fields
+    verification_status: str = "pending"   # "pending" | "verified" | "flagged" | "unverifiable"
+    verification_notes: str = ""
+    verification_confidence: float | None = None
 
 
 class RuleReviewRequest(BaseModel):
@@ -75,4 +79,11 @@ class ActivateRulesResponse(BaseModel):
     doc_id: str
     rules_activated: int
     jurisdiction: str
+    message: str
+
+
+class ExtractionJobStarted(BaseModel):
+    """Response when a rule-extraction Celery job is queued."""
+    doc_id: str
+    celery_task_id: str
     message: str

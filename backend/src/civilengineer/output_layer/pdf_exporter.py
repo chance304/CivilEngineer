@@ -407,6 +407,64 @@ class PDFExporter:
             ]))
             items.append(bt)
 
+        # Per-room flooring (show only rooms with a finish override applied)
+        rooms_with_finish = [r for r in cost_estimate.room_breakdown if r.flooring_used]
+        if rooms_with_finish:
+            items.append(Spacer(1, 12))
+            items.append(Paragraph("Flooring Selections Applied", styles["Heading2"]))
+            items.append(Spacer(1, 4))
+            finish_data = [["Floor", "Room Type", "Flooring", "Finish Cost (₹)"]] + [
+                [
+                    str(r.floor),
+                    r.room_type.replace("_", " ").title(),
+                    r.flooring_used.title(),
+                    f"{r.finish_cost:,.0f}",
+                ]
+                for r in sorted(rooms_with_finish, key=lambda r: (r.floor, r.room_type))
+            ]
+            ft = Table(finish_data, colWidths=[35, 120, 90, 95])
+            ft.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+                ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+                ("FONTSIZE",   (0, 0), (-1, -1), 8),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F3F4")]),
+                ("BOX",  (0, 0), (-1, -1), 0.5, colors.HexColor("#95A5A6")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#BDC3C7")),
+                ("ALIGN", (3, 0), (3, -1), "RIGHT"),
+            ]))
+            items.append(ft)
+
+        # Tier comparison
+        if cost_estimate.tier_comparison:
+            items.append(Spacer(1, 12))
+            items.append(Paragraph("Grade Comparison (same layout)", styles["Heading2"]))
+            items.append(Spacer(1, 4))
+            grade_labels = {"basic": "Basic", "standard": "Standard", "premium": "Premium"}
+            tier_data = [["Grade", "Total Cost (₹)", "Notes"]] + [
+                [
+                    grade_labels.get(g, g.title()),
+                    f"{v:,.0f}",
+                    "(selected)" if g == cost_estimate.material_grade else "",
+                ]
+                for g, v in [
+                    ("basic",    cost_estimate.tier_comparison.get("basic", 0)),
+                    ("standard", cost_estimate.tier_comparison.get("standard", 0)),
+                    ("premium",  cost_estimate.tier_comparison.get("premium", 0)),
+                ]
+            ]
+            tt = Table(tier_data, colWidths=[80, 130, 80])
+            tt.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+                ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+                ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE",   (0, 0), (-1, -1), 8),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F3F4")]),
+                ("BOX",  (0, 0), (-1, -1), 0.5, colors.HexColor("#95A5A6")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#BDC3C7")),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ]))
+            items.append(tt)
+
         return items
 
 

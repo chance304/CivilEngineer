@@ -95,6 +95,7 @@ class DesignJobModel(SQLModel, table=True):
     submitted_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    finalized_at: datetime | None = None
     status: str = "pending"
     current_step: str = "loading"
     result: dict | None = Field(default=None, sa_column=Column(JSON))
@@ -312,6 +313,24 @@ class DesignApprovalModel(SQLModel, table=True):
     feedback_text: str = ""
     occurred_at: datetime = Field(default_factory=_utcnow)
     revision_count: int = 0
+
+
+class ClientApprovalModel(SQLModel, table=True):
+    """Client (viewer-role) sign-off on a finalized design session."""
+    __tablename__ = "client_approvals"
+
+    approval_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="projects.project_id", index=True)
+    session_id: str = Field(index=True)
+    firm_id: str = Field(foreign_key="firms.firm_id", index=True)
+    submitted_by: str = Field(foreign_key="users.user_id")
+    submitted_at: datetime = Field(default_factory=_utcnow)
+    action: str                         # "approved" | "revision_requested"
+    notes: str = ""                     # client's revision notes (if any)
+
+    __table_args__ = (
+        sa.Index("ix_client_approvals_session", "session_id"),
+    )
 
 
 class ElevationDecisionModel(SQLModel, table=True):

@@ -240,7 +240,8 @@ async def _run_design_pipeline_async(
         final_values = snapshot.values if snapshot else {}
         dxf_paths  = (final_values or {}).get("dxf_paths") or []
         pdf_paths  = (final_values or {}).get("pdf_paths") or []
-        output_files = dxf_paths + pdf_paths
+        ifc_path   = (final_values or {}).get("ifc_path")
+        dwg_paths  = (final_values or {}).get("dwg_paths") or []
         errors     = (final_values or {}).get("errors") or []
 
         if errors:
@@ -257,25 +258,37 @@ async def _run_design_pipeline_async(
                 "status": "failed",
                 "error": error_msg,
             })
-            return {"status": "failed", "error": error_msg, "output_files": output_files}
+            return {"status": "failed", "error": error_msg, "output_files": []}
 
-        logger.info("Session %s completed. Files: %s", session_id, output_files)
+        # Upload generated files to S3 and build structured file records
+        output_file_records = await _upload_output_files(
+            session_id=session_id,
+            dxf_paths=dxf_paths,
+            pdf_paths=pdf_paths,
+            ifc_path=ifc_path,
+            dwg_paths=dwg_paths,
+        )
+
+        logger.info(
+            "Session %s completed. Uploaded %d files to S3.",
+            session_id, len(output_file_records),
+        )
         await _update_job_db(
             job_id,
             status="completed",
             current_step="done",
             completed_at=datetime.now(UTC),
-            result={"output_files": output_files},
+            result={"output_file_records": output_file_records},
         )
         await _publish_event(project_id, {
             "type": "design.completed",
             "job_id": job_id,
             "session_id": session_id,
             "status": "completed",
-            "output_files": output_files,
+            "num_files": len(output_file_records),
             "progress_pct": 100,
         })
-        return {"status": "completed", "output_files": output_files}
+        return {"status": "completed", "output_files": [r["name"] for r in output_file_records]}
 
     except Exception as exc:
         msg = f"Design pipeline crashed: {exc}"
@@ -433,6 +446,94 @@ def _summarise_floor_plans(floor_plan_dicts: list[dict]) -> dict:
 def make_job_id() -> str:
     """Generate a unique design job ID."""
     return f"job_{uuid.uuid4().hex[:12]}"
+
+
+# --------------------------------------------------------------------------- #
+# S3 output-file helpers                                                       #
+# --------------------------------------------------------------------------- #
+
+
+async def _upload_output_files(
+    session_id: str,
+    dxf_paths: list[str],
+    pdf_paths: list[str],
+    ifc_path: str | None,
+    dwg_paths: list[str],
+) -> list[dict]:
+    """Upload all generated output files to S3 and return structured file records.
+
+    Each record: {"name": str, "type": str, "s3_key": str, "size_bytes": int}
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from civilengineer.core.config import get_settings  # noqa: PLC0415
+    from civilengineer.storage import s3_backend  # noqa: PLC0415
+
+    settings = get_settings()
+    bucket = settings.S3_BUCKET_PROJECTS
+
+    all_paths: list[str] = list(dxf_paths) + list(pdf_paths)
+    if ifc_path:
+        all_paths.append(ifc_path)
+    all_paths.extend(dwg_paths)
+
+    try:
+        s3_backend.ensure_bucket_exists(bucket)
+    except Exception as exc:
+        logger.warning("Could not ensure S3 bucket '%s': %s", bucket, exc)
+
+    records: list[dict] = []
+    for path_str in all_paths:
+        try:
+            path = Path(path_str)
+            if not path.exists():
+                logger.debug("_upload_output_files: skipping missing file %s", path_str)
+                continue
+            data = path.read_bytes()
+            s3_key = f"outputs/{session_id}/{path.name}"
+            s3_backend.upload_bytes(
+                bucket, s3_key, data, _output_content_type(path.suffix)
+            )
+            records.append({
+                "name": path.name,
+                "type": _classify_output_file(path.name),
+                "s3_key": s3_key,
+                "size_bytes": len(data),
+            })
+            logger.debug("_upload_output_files: uploaded %s → %s", path.name, s3_key)
+        except Exception as exc:
+            logger.warning("_upload_output_files: failed for %s: %s", path_str, exc)
+
+    return records
+
+
+def _classify_output_file(name: str) -> str:
+    """Map an output filename to its OutputFile type string."""
+    n = name.lower()
+    if n.endswith(".pdf"):
+        return "pdf"
+    if n.endswith(".ifc"):
+        return "ifc"
+    if n.endswith(".dwg"):
+        return "dwg"
+    if n.endswith(".dxf"):
+        if n.startswith("mep_"):
+            return "dxf_mep"
+        if n.startswith("elevation_"):
+            return "dxf_elevation"
+        if "3d" in n:
+            return "dxf_3d"
+        return "dxf_floor_plan"
+    return "pdf"
+
+
+def _output_content_type(suffix: str) -> str:
+    return {
+        ".dxf": "application/dxf",
+        ".pdf": "application/pdf",
+        ".ifc": "application/x-step",
+        ".dwg": "application/acad",
+    }.get(suffix.lower(), "application/octet-stream")
 
 
 # --------------------------------------------------------------------------- #

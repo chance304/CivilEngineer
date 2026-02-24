@@ -33,6 +33,29 @@ from the jurisdiction's compiled rule set. The LLM never makes numeric decisions
 - Roles: `firm_admin` → `senior_engineer` → `engineer` → `viewer`
 - JWT auth (15-min access token + 7-day httpOnly refresh cookie)
 
+### Flooring & Finishes
+- Per-room finish overrides: `FloorFinish` enum (concrete → vinyl → tile → mosaic → granite → hardwood → marble)
+- `FinishSpec` per room type (flooring + wall paint + ceiling treatment)
+- Interview questions (phase `"finishes"`) populate `DesignRequirements.finish_overrides`
+- Cost estimator applies weighted finish multiplier (50% flooring + 30% wall + 20% ceiling)
+
+### Cost Estimation
+- Room-by-room construction cost at three material grades (basic / standard / premium)
+- Per-room finish overrides shift the finish cost while structure cost stays fixed
+- Tier comparison table in every estimate (same building at all three grades)
+- PDF cost page: summary table + room-type breakdown + flooring selections + grade comparison
+
+### Output & Session Management
+- **ZIP download** — all session files bundled server-side and streamed as `application/zip`
+- **Documentation completeness gate** — `POST /finalize` checks required files (floor plan DXF, PDF, site plan) and blocks finalization if missing; advisory items (elevation, 3D, MEP DXFs) reported but non-blocking
+- **`finalized` session status** — formal handoff checkpoint; emerald styling in UI
+
+### Client Approval Interface
+- Dedicated `/client-review` page for viewer-role clients
+- Shows floor plan SVG, cost estimate with grade comparison, file downloads
+- Approve or request revision with notes — separate from mid-pipeline engineer approval
+- `GET/POST /client-approve` endpoints; all roles including `viewer` can submit
+
 ### Frontend Portal (Next.js 14)
 - Dashboard, project creation wizard, plot upload with polygon preview
 - Real-time design job progress via WebSocket (8-step timeline)
@@ -40,6 +63,8 @@ from the jurisdiction's compiled rule set. The LLM never makes numeric decisions
 - SVG elevation viewer (front/rear/left/right)
 - Isometric 3D building viewer with rotation controls
 - Engineer review panel (approve / revise / abort)
+- Client review page (approve / request revision)
+- Output files page with ZIP download, finalize gate, and "Client View" link
 - Admin: LLM config, building code PDF upload + rule review, user management
 
 ---
@@ -103,7 +128,7 @@ civilengineer/
 │   │   ├── requirements_interview/ Conversational requirements gathering
 │   │   └── schemas/          Pydantic schemas (design, MEP, auth, codes)
 │   ├── tests/
-│   │   ├── unit/             474 unit tests (all mocked)
+│   │   ├── unit/             569 unit tests (all mocked)
 │   │   └── integration/      Real PostgreSQL + Redis, mocked LLM
 │   └── scripts/              DB seed, knowledge index, type generation
 ├── frontend/                 Next.js 14 — TypeScript, Tailwind, shadcn/ui
@@ -186,7 +211,7 @@ uv sync                              # Install / sync dependencies
 uv run alembic upgrade head          # Apply DB migrations
 uv run pytest tests/unit/            # Unit tests (fast, no Docker needed)
 uv run pytest tests/integration/     # Integration tests (requires Docker services)
-uv run pytest tests/ -v              # All 474 tests
+uv run pytest tests/ -v              # All 569 tests
 ```
 
 ### Frontend

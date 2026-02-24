@@ -15,6 +15,7 @@ class JobStatus(StrEnum):
     RUNNING   = "running"
     PAUSED    = "paused"      # Waiting for human approval
     COMPLETED = "completed"
+    FINALIZED = "finalized"   # Completed + documentation completeness verified
     FAILED    = "failed"
     CANCELLED = "cancelled"
 
@@ -63,6 +64,7 @@ class DesignJob(BaseModel):
     submitted_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    finalized_at: datetime | None = None
     status: JobStatus
     current_step: DesignJobStep
     result: dict | None = None

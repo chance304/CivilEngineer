@@ -12,10 +12,10 @@ from the jurisdiction's compiled rule set. The LLM never makes numeric decisions
 
 Full architecture docs: `architecture/` — start with `00-overview.md`.
 
-**Current status (2026-02-23):**
-- Backend: **474/474 unit tests passing** — all 12 layers implemented including MEP engine
-- Frontend: **complete Next.js 14 portal** — 17 pages, 39 TypeScript files
-- Progress log: `discussion/2026-02-23.md`
+**Current status (2026-02-24):**
+- Backend: **569/569 unit tests passing** — all 12 layers + flooring/finishes, cost estimator, ZIP download, finalized status, client approval
+- Frontend: **complete Next.js 14 portal** — 18 pages, 40+ TypeScript files
+- Progress log: `progress/2026-02-24.md`
 
 ---
 
@@ -281,6 +281,8 @@ backend/src/civilengineer/
   reasoning_engine/constraint_solver.py  OR-Tools CP-SAT (multi-floor)
   reasoning_engine/mep_router.py   A* conduit routing + plumbing stacking
   elevation_engine/                Front/rear/side elevation generator + 3D outline
+  output_layer/cost_estimator.py   Room-by-room cost estimate with finish overrides + tier comparison
+  output_layer/pdf_exporter.py     PDF package (cover + room schedule + plans + compliance + cost)
   output_layer/ifc_exporter.py     IFC 2x3 BIM export (ifcopenshell, optional)
   code_parser/                     PDF reader + LLM rule extractor + reviewer
   cad_layer/ezdxf_driver.py        Primary CAD generation (plan + elevation + 3D + MEP)
@@ -296,7 +298,8 @@ frontend/src/
   app/(portal)/projects/[id]/interview/  WebSocket interview chat
   app/(portal)/projects/[id]/design/[sessionId]/  Pipeline progress timeline
   app/(portal)/projects/[id]/design/[sessionId]/review/  Engineer approval
-  app/(portal)/projects/[id]/files/  Output file downloads
+  app/(portal)/projects/[id]/design/[sessionId]/client-review/  Client sign-off (viewer role)
+  app/(portal)/projects/[id]/files/  Output files + ZIP download + finalize gate
   app/(portal)/admin/llm-config/   LLM provider + API key admin page
   app/(portal)/admin/building-codes/ Building code PDF upload + rule review pages
   app/(portal)/admin/users/        User management + invite

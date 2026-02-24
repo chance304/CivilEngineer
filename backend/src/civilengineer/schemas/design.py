@@ -200,6 +200,36 @@ class BuildingDesign(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Flooring & finishes
+# ---------------------------------------------------------------------------
+
+
+class FloorFinish(StrEnum):
+    """Flooring material options, ordered roughly by cost (low → high)."""
+    CONCRETE  = "concrete"   # plain screed — basic
+    VINYL     = "vinyl"      # vinyl / laminate
+    TILE      = "tile"       # ceramic or vitrified tile — standard
+    MOSAIC    = "mosaic"     # mosaic tile — mid-range decorative
+    GRANITE   = "granite"    # granite slab
+    HARDWOOD  = "hardwood"   # engineered or solid timber
+    MARBLE    = "marble"     # imported marble — premium
+
+
+class FinishSpec(BaseModel):
+    """Finish selections for a room or group of rooms.
+
+    Applied per-room-type via ``DesignRequirements.finish_overrides``.
+    Keys in that dict can be any ``RoomType`` value, or the special group
+    keys ``"dry_rooms"`` (bedrooms / living / dining) and ``"wet_rooms"``
+    (bathrooms / kitchen / toilet).
+    """
+    flooring: FloorFinish = FloorFinish.TILE
+    # Simple string fields rather than extra enums — extensible without schema churn
+    wall_paint: str = "standard"   # "standard" | "premium" | "texture"
+    ceiling: str = "plaster"       # "plaster" | "pop" | "false_ceiling" | "wood_panel"
+
+
+# ---------------------------------------------------------------------------
 # Design requirements (from interview — used by solver)
 # ---------------------------------------------------------------------------
 
@@ -230,3 +260,5 @@ class DesignRequirements(BaseModel):
     road_width_m: float | None = None   # Used to compute setbacks in Nepal
     notes: str = ""
     mep_requirements: MEPRequirements | None = None  # MEP-specific requirements
+    # Per-room-type finish overrides.  Keys: RoomType values, "dry_rooms", "wet_rooms".
+    finish_overrides: dict[str, FinishSpec] = Field(default_factory=dict)

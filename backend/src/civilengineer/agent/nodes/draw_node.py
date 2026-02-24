@@ -28,7 +28,7 @@ from civilengineer.output_layer.cost_estimator import CostEstimator
 from civilengineer.output_layer.dxf_exporter import DXFExporter
 from civilengineer.output_layer.ifc_exporter import IFCExporter
 from civilengineer.output_layer.pdf_exporter import PDFExporter
-from civilengineer.schemas.design import BuildingDesign, FloorPlan
+from civilengineer.schemas.design import BuildingDesign, FinishSpec, FloorPlan
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,23 @@ def draw_node(state: AgentState) -> dict:
             "classical": "premium",
         }
         grade = _style_to_grade.get(str(material_grade).lower(), "standard")
-        estimator = CostEstimator(material_grade=grade)  # type: ignore[arg-type]
+
+        # Parse finish_overrides from requirements (may be empty dict)
+        raw_overrides: dict = requirements.get("finish_overrides") or {}
+        finish_overrides: dict[str, FinishSpec] = {}
+        for rt_key, spec_data in raw_overrides.items():
+            try:
+                finish_overrides[rt_key] = (
+                    spec_data if isinstance(spec_data, FinishSpec)
+                    else FinishSpec.model_validate(spec_data)
+                )
+            except Exception:  # noqa: BLE001
+                pass  # skip malformed overrides silently
+
+        estimator = CostEstimator(
+            material_grade=grade,  # type: ignore[arg-type]
+            finish_overrides=finish_overrides or None,
+        )
         cost_estimate = estimator.estimate(building)
         cost_dict = cost_estimate.model_dump()
 

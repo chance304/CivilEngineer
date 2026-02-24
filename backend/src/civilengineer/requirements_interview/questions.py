@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from civilengineer.schemas.design import RoomType, StylePreference
+from civilengineer.schemas.design import FinishSpec, FloorFinish, RoomType, StylePreference
 from civilengineer.schemas.mep import MEPRequirements
 
 # ---------------------------------------------------------------------------
@@ -201,6 +201,61 @@ def extract_lighting_preference(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Finish extractor functions
+# ---------------------------------------------------------------------------
+
+
+def extract_floor_finish(text: str) -> FloorFinish:
+    """Parse a flooring material preference from free text.
+
+    Returns a ``FloorFinish`` enum value.
+    Examples: 'marble' → MARBLE, 'vitrified tile' → TILE, 'hardwood' → HARDWOOD
+    """
+    t = text.lower()
+    if any(w in t for w in ["marble", "italian marble", "imported marble"]):
+        return FloorFinish.MARBLE
+    if any(w in t for w in ["granite", "granite slab"]):
+        return FloorFinish.GRANITE
+    if any(w in t for w in ["hardwood", "wood floor", "timber floor", "parquet", "oak", "teak"]):
+        return FloorFinish.HARDWOOD
+    if any(w in t for w in ["mosaic", "mosaic tile"]):
+        return FloorFinish.MOSAIC
+    if any(w in t for w in ["vinyl", "laminate", "pvc", "luxury vinyl"]):
+        return FloorFinish.VINYL
+    if any(w in t for w in ["concrete", "screed", "plain", "bare"]):
+        return FloorFinish.CONCRETE
+    return FloorFinish.TILE   # default: standard ceramic / vitrified tile
+
+
+def extract_ceiling_finish(text: str) -> str:
+    """Parse ceiling finish preference.
+
+    Returns one of: 'plaster', 'pop', 'false_ceiling', 'wood_panel'.
+    """
+    t = text.lower()
+    if any(w in t for w in ["wood", "timber", "panel", "wooden panel"]):
+        return "wood_panel"
+    if any(w in t for w in ["false ceiling", "false", "gypsum board", "t-grid", "grid"]):
+        return "false_ceiling"
+    if any(w in t for w in ["pop", "plaster of paris", "cornice", "decorative"]):
+        return "pop"
+    return "plaster"   # default: plain plaster
+
+
+def extract_wall_paint(text: str) -> str:
+    """Parse wall paint / finish preference.
+
+    Returns one of: 'standard', 'premium', 'texture'.
+    """
+    t = text.lower()
+    if any(w in t for w in ["texture", "textured", "3d paint", "stucco"]):
+        return "texture"
+    if any(w in t for w in ["premium", "luxury", "high quality", "branded", "asian paints royale"]):
+        return "premium"
+    return "standard"
+
+
+# ---------------------------------------------------------------------------
 # Question bank
 # ---------------------------------------------------------------------------
 
@@ -346,6 +401,54 @@ QUESTIONS: list[Question] = [
         extractor=extract_lighting_preference,
         help_text="Natural-first maximises daylight; Task = practical; Feature = decorative.",
     ),
+    # Finish questions
+    Question(
+        id="floor_finish_dry",
+        phase="finishes",
+        prompt=(
+            "What flooring material do you prefer for living areas and bedrooms? "
+            "(Tile / Marble / Granite / Hardwood / Vinyl / Concrete)"
+        ),
+        required=False,
+        extractor=extract_floor_finish,
+        help_text=(
+            "Tile = standard ceramic/vitrified; Marble = premium imported; "
+            "Granite = mid-premium; Hardwood = timber; Vinyl = budget laminate."
+        ),
+    ),
+    Question(
+        id="floor_finish_wet",
+        phase="finishes",
+        prompt=(
+            "What flooring for wet areas — bathrooms and kitchen? "
+            "(Tile / Marble / Granite / Mosaic)"
+        ),
+        required=False,
+        extractor=extract_floor_finish,
+        help_text="Anti-slip tile is recommended for wet areas. Mosaic is popular in bathrooms.",
+    ),
+    Question(
+        id="ceiling_finish",
+        phase="finishes",
+        prompt=(
+            "What ceiling finish do you prefer? "
+            "(Plain plaster / POP cornice / False ceiling / Wood panel)"
+        ),
+        required=False,
+        extractor=extract_ceiling_finish,
+        help_text=(
+            "Plain plaster = budget; POP cornice = decorative edges; "
+            "False ceiling = gypsum grid; Wood panel = premium timber."
+        ),
+    ),
+    Question(
+        id="wall_paint",
+        phase="finishes",
+        prompt="What wall paint quality do you prefer? (Standard / Premium / Texture finish)",
+        required=False,
+        extractor=extract_wall_paint,
+        help_text="Standard = economy emulsion; Premium = branded washable paint; Texture = 3D/stucco effect.",
+    ),
 ]
 
 # Index for quick lookup
@@ -420,6 +523,36 @@ def answers_to_requirements(
         lighting_preference=answers.get("lighting_preference", "natural-first"),
     )
 
+    # Finish overrides: map interview answers to room-type groups
+    finish_overrides: dict[str, dict] = {}
+
+    dry_finish = answers.get("floor_finish_dry")
+    wet_finish = answers.get("floor_finish_wet")
+    ceiling    = answers.get("ceiling_finish", "plaster")
+    wall_paint = answers.get("wall_paint", "standard")
+
+    if dry_finish is not None:
+        dry_spec = FinishSpec(
+            flooring=dry_finish,
+            wall_paint=wall_paint,
+            ceiling=ceiling,
+        )
+        for room_type in (
+            RoomType.MASTER_BEDROOM, RoomType.BEDROOM,
+            RoomType.LIVING_ROOM, RoomType.DINING_ROOM,
+            RoomType.HOME_OFFICE, RoomType.POOJA_ROOM,
+        ):
+            finish_overrides[room_type.value] = dry_spec.model_dump()
+
+    if wet_finish is not None:
+        wet_spec = FinishSpec(
+            flooring=wet_finish,
+            wall_paint=wall_paint,
+            ceiling=ceiling,
+        )
+        for room_type in (RoomType.BATHROOM, RoomType.TOILET, RoomType.KITCHEN):
+            finish_overrides[room_type.value] = wet_spec.model_dump()
+
     return {
         "project_id": project_id,
         "jurisdiction": jurisdiction,
@@ -430,6 +563,7 @@ def answers_to_requirements(
         "road_width_m": road_width_m,
         "notes": notes_text,
         "mep_requirements": mep_req.model_dump(),
+        "finish_overrides": finish_overrides,
     }
 
 

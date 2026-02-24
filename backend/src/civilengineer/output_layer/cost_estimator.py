@@ -27,7 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from civilengineer.schemas.design import BuildingDesign, RoomType
+from civilengineer.schemas.design import BuildingDesign, FinishSpec, FloorFinish, RoomType
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,34 @@ _MEP_FACTOR: dict[MaterialGrade, float] = {
 _CONTINGENCY: float = 0.05   # 5 %
 
 # ---------------------------------------------------------------------------
+# Finish multipliers  (applied to the finish rate, not the structure rate)
+# ---------------------------------------------------------------------------
+
+# Flooring material → relative multiplier on finish cost (tile = 1.0 baseline)
+_FLOORING_MULT: dict[FloorFinish, float] = {
+    FloorFinish.CONCRETE: 0.50,
+    FloorFinish.VINYL:    0.70,
+    FloorFinish.TILE:     1.00,
+    FloorFinish.MOSAIC:   1.30,
+    FloorFinish.GRANITE:  1.60,
+    FloorFinish.HARDWOOD: 2.00,
+    FloorFinish.MARBLE:   2.80,
+}
+
+_WALL_PAINT_MULT: dict[str, float] = {
+    "standard": 1.00,
+    "premium":  1.40,
+    "texture":  1.60,
+}
+
+_CEILING_MULT: dict[str, float] = {
+    "plaster":       1.00,
+    "pop":           1.30,
+    "false_ceiling": 1.80,
+    "wood_panel":    2.50,
+}
+
+# ---------------------------------------------------------------------------
 # Result model
 # ---------------------------------------------------------------------------
 
@@ -87,6 +115,7 @@ class RoomCost(BaseModel):
     structure_cost: float
     finish_cost: float
     total_cost: float
+    flooring_used: str | None = None   # FloorFinish value if override applied
 
 
 class CostEstimate(BaseModel):
@@ -108,6 +137,10 @@ class CostEstimate(BaseModel):
     # Summary by room type (aggregated)
     type_breakdown: dict[str, float]   # room_type → total cost
 
+    # Tier comparison: total cost if built at basic / standard / premium
+    # (ignores finish overrides — pure grade comparison)
+    tier_comparison: dict[str, float] = {}   # grade → total_cost_inr
+
     def formatted_total(self) -> str:
         crore = self.total_cost_inr / 1_00_00_000
         lakh  = self.total_cost_inr / 1_00_000
@@ -127,12 +160,53 @@ class CostEstimator:
 
     Args:
         material_grade: One of "basic", "standard", "premium".
+        finish_overrides: Per-room-type FinishSpec overrides (from DesignRequirements).
+            Keys are RoomType string values (e.g. "bedroom", "bathroom").
+            When present, the finish cost for that room type is scaled by the
+            weighted finish multiplier (50 % flooring + 30 % wall + 20 % ceiling).
     """
 
-    def __init__(self, material_grade: MaterialGrade = "standard") -> None:
+    def __init__(
+        self,
+        material_grade: MaterialGrade = "standard",
+        finish_overrides: dict[str, FinishSpec] | None = None,
+    ) -> None:
         if material_grade not in ("basic", "standard", "premium"):
             raise ValueError(f"Unknown material_grade: {material_grade!r}")
         self.grade: MaterialGrade = material_grade
+        self._overrides: dict[str, FinishSpec] = finish_overrides or {}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _finish_multiplier(self, spec: FinishSpec) -> float:
+        """Weighted finish multiplier from a FinishSpec (relative to standard tile/paint/plaster)."""
+        floor_m = _FLOORING_MULT.get(spec.flooring, 1.0)
+        wall_m  = _WALL_PAINT_MULT.get(spec.wall_paint, 1.0)
+        ceil_m  = _CEILING_MULT.get(spec.ceiling, 1.0)
+        return 0.50 * floor_m + 0.30 * wall_m + 0.20 * ceil_m
+
+    def _tier_grand_total(self, building: BuildingDesign, grade: MaterialGrade) -> float:
+        """Compute grand total for a given grade (no finish overrides) for comparison."""
+        struct_rate = _STRUCTURE_RATE[grade]
+        total_s = 0.0
+        total_f = 0.0
+        for fp in building.floor_plans:
+            for room in fp.rooms:
+                area = room.bounds.area
+                if area <= 0:
+                    continue
+                finish_table = _FINISH_RATE.get(room.room_type, _FINISH_RATE[RoomType.OTHER])
+                total_s += area * struct_rate
+                total_f += area * finish_table[grade]
+        mep   = total_s * _MEP_FACTOR[grade]
+        sub   = total_s + total_f + mep
+        return round(sub * (1 + _CONTINGENCY), 0)
+
+    # ------------------------------------------------------------------
+    # Main estimate
+    # ------------------------------------------------------------------
 
     def estimate(self, building: BuildingDesign) -> CostEstimate:
         """Run the cost estimate and return a CostEstimate."""
@@ -150,7 +224,18 @@ class CostEstimator:
                     continue
 
                 finish_table = _FINISH_RATE.get(room.room_type, _FINISH_RATE[RoomType.OTHER])
-                finish_rate  = finish_table[self.grade]
+                base_finish_rate = finish_table[self.grade]
+
+                # Apply finish override multiplier if present for this room type
+                rt_key = room.room_type.value
+                override = self._overrides.get(rt_key)
+                flooring_used: str | None = None
+                if override is not None:
+                    mult = self._finish_multiplier(override)
+                    finish_rate = base_finish_rate * mult
+                    flooring_used = override.flooring.value
+                else:
+                    finish_rate = base_finish_rate
 
                 s_cost = area * struct_rate
                 f_cost = area * finish_rate
@@ -159,7 +244,6 @@ class CostEstimator:
                 total_structure += s_cost
                 total_finish    += f_cost
 
-                rt_key = room.room_type.value
                 type_totals[rt_key] = type_totals.get(rt_key, 0.0) + room_total
 
                 room_costs.append(
@@ -171,6 +255,7 @@ class CostEstimator:
                         structure_cost=round(s_cost, 0),
                         finish_cost=round(f_cost, 0),
                         total_cost=round(room_total, 0),
+                        flooring_used=flooring_used,
                     )
                 )
 
@@ -181,6 +266,12 @@ class CostEstimator:
 
         total_area = sum(r.area_sqm for r in room_costs)
         cost_per_sqm = grand_total / total_area if total_area > 0 else 0.0
+
+        # Tier comparison (pure grade, no overrides)
+        tier_comparison = {
+            g: self._tier_grand_total(building, g)
+            for g in ("basic", "standard", "premium")
+        }
 
         logger.info(
             "CostEstimator [%s]: %.0f sqm → ₹ %.0f (%.0f/sqm)",
@@ -200,4 +291,5 @@ class CostEstimator:
             cost_per_sqm_inr=round(cost_per_sqm, 0),
             room_breakdown=room_costs,
             type_breakdown={k: round(v, 0) for k, v in type_totals.items()},
+            tier_comparison=tier_comparison,
         )

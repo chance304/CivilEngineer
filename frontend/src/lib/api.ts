@@ -124,6 +124,23 @@ export const designApi = {
     apiFetch<{ session_id: string }>(`/projects/${projectId}/design`, {
       method: 'POST',
     }),
+  list: (projectId: string) =>
+    apiFetch<{
+      job_id: string;
+      session_id: string;
+      status: string;
+      current_step: string;
+      submitted_at: string;
+      completed_at: string | null;
+    }[]>(`/projects/${projectId}/design`),
+  getJob: (projectId: string, sessionId: string) =>
+    apiFetch<{
+      job_id: string;
+      session_id: string;
+      status: string;
+      current_step: string;
+      result: Record<string, unknown> | null;
+    }>(`/projects/${projectId}/design/${sessionId}`),
   sendInterviewAnswer: (projectId: string, sessionId: string, answer: string) =>
     apiFetch<unknown>(`/projects/${projectId}/design/${sessionId}/interview`, {
       method: 'POST',
@@ -140,11 +157,70 @@ export const designApi = {
       body: JSON.stringify({ action, notes }),
     }),
   getFiles: (projectId: string, sessionId: string) =>
-    apiFetch<unknown[]>(`/projects/${projectId}/design/${sessionId}/files`),
+    apiFetch<{ name: string; type: string; download_url: string; size_bytes: number }[]>(
+      `/projects/${projectId}/design/${sessionId}/files`
+    ),
+  downloadZip: async (projectId: string, sessionId: string) => {
+    const { accessToken } = useAppStore.getState();
+    const res = await fetch(`${API_BASE}/projects/${projectId}/design/${sessionId}/files/zip`, {
+      headers: { Authorization: `Bearer ${accessToken ?? ''}` },
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error('ZIP download failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `design-${sessionId.slice(0, 8)}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+  finalize: (projectId: string, sessionId: string) =>
+    apiFetch<{
+      job_id: string;
+      session_id: string;
+      finalized: boolean;
+      finalized_at: string | null;
+      completeness: {
+        is_complete: boolean;
+        missing_required: string[];
+        missing_advisory: string[];
+        present: Record<string, boolean>;
+        total_files: number;
+      };
+    }>(`/projects/${projectId}/design/${sessionId}/finalize`, { method: 'POST' }),
   getDecisions: (projectId: string) =>
     apiFetch<unknown[]>(`/projects/${projectId}/decisions`),
   getComplianceReports: (projectId: string) =>
     apiFetch<unknown[]>(`/projects/${projectId}/compliance-reports`),
+  getClientApproval: (projectId: string, sessionId: string) =>
+    apiFetch<{
+      session_id: string;
+      has_approval: boolean;
+      action: string | null;
+      notes: string | null;
+      submitted_by: string | null;
+      submitted_at: string | null;
+    }>(`/projects/${projectId}/design/${sessionId}/client-approval`),
+  clientApprove: (
+    projectId: string,
+    sessionId: string,
+    action: 'approved' | 'revision_requested',
+    notes?: string
+  ) =>
+    apiFetch<{
+      session_id: string;
+      has_approval: boolean;
+      action: string | null;
+      notes: string | null;
+      submitted_by: string | null;
+      submitted_at: string | null;
+    }>(`/projects/${projectId}/design/${sessionId}/client-approve`, {
+      method: 'POST',
+      body: JSON.stringify({ action, notes: notes ?? '' }),
+    }),
 };
 
 // Admin
